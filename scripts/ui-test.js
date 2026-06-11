@@ -59,6 +59,16 @@ async function main() {
   const code = await A.$eval('#lobby-code', (el) => el.textContent.trim());
   check(/^[A-Z2-9]{6}$/.test(code), `código de sala (${code})`);
 
+  // Índice de partidas: una tercera persona ve la sala desde el inicio
+  const C = await newPage(browser, 'C');
+  await C.waitForFunction(
+    (cd) => document.getElementById('games-list').textContent.includes(cd),
+    { timeout: 12000 }, code).catch(() => null);
+  const indexHasGame = await C.evaluate((cd) =>
+    document.getElementById('games-list').textContent.includes(cd), code);
+  check(indexHasGame, 'el índice de partidas muestra la sala recién creada');
+  await C.browserContext().close();
+
   // B se une
   await B.type('#home-code', code);
   await B.click('#btn-join');
@@ -147,6 +157,21 @@ async function main() {
   const placed = await turnPage.evaluate(() =>
     document.getElementById('action-info').textContent.includes('4'));
   check(placed, 'tocar un país propio coloca un ejército (5→4)');
+
+  // Historial: pestaña dentro del panel de chat con los turnos
+  const other = turnPage === A ? B : A;
+  await other.click('#btn-chat');
+  await new Promise((r) => setTimeout(r, 350));
+  await other.click('#tab-hist');
+  await new Promise((r) => setTimeout(r, 200));
+  const histVisible = await other.evaluate(() => {
+    const el = document.getElementById('hist-list');
+    return !el.classList.contains('hidden') && el.textContent.length > 5;
+  });
+  check(histVisible, 'la pestaña Historial muestra los turnos');
+  const histHasTurn = await other.evaluate(() =>
+    document.getElementById('hist-list').textContent.includes('Colocación inicial'));
+  check(histHasTurn, 'el historial registra la colocación inicial');
 
   await browser.close();
   console.log(failures === 0 ? '\nUI TEST SUPERADO ✔' : `\n${failures} FALLOS ✘`);

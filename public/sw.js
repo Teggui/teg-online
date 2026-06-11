@@ -17,7 +17,7 @@ self.addEventListener('push', (event) => {
     if (visible) return;
     await self.registration.showNotification(title, {
       body,
-      tag: 'teg-turno',
+      tag: data.tag || 'teg-turno',
       icon: 'icon-180.png',
       badge: 'icon-180.png'
     });

@@ -95,6 +95,55 @@
     if (session.owns(ss)) socket.emit('rejoin', { code: ss.code, token: ss.token }, () => {});
   });
 
+  // ------------------------------------------- índice de partidas activas
+  function refreshGamesIndex() {
+    if (!$('screen-home').classList.contains('active')) return;
+    socket.emit('listGames', {}, (res) => {
+      if (!res || !res.games || !$('screen-home').classList.contains('active')) return;
+      const wrap = $('games-index'), ul = $('games-list');
+      if (!wrap) return;
+      wrap.classList.toggle('hidden', res.games.length === 0);
+      ul.innerHTML = '';
+      for (const game of res.games) {
+        const li = document.createElement('li');
+        const info = document.createElement('div');
+        info.className = 'g-info';
+        const statusTxt = game.status === 'lobby'
+          ? `En sala de espera · ${game.players.length} jugador${game.players.length !== 1 ? 'es' : ''}`
+          : game.status === 'finished'
+            ? `Terminada · ganó ${game.winnerName || '?'}`
+            : `Ronda ${Math.max(1, game.round)} · turno de ${game.currentName}`;
+        info.innerHTML = `<span class="g-code">${esc(game.code)}</span>` +
+          `<div class="g-status">${esc(statusTxt)}</div>`;
+        const row = document.createElement('div');
+        row.className = 'g-players';
+        for (const p of game.players) {
+          const d = document.createElement('span');
+          d.className = 'dot';
+          d.style.background = colorHex(p.color);
+          d.title = p.name + (p.connected ? '' : ' (desconectado)');
+          if (p.eliminated || !p.connected) d.style.opacity = '.35';
+          row.appendChild(d);
+        }
+        info.appendChild(row);
+        li.appendChild(info);
+        if (game.status !== 'finished') {
+          const b = document.createElement('button');
+          b.className = 'btn tiny';
+          b.textContent = game.status === 'lobby' ? 'Unirse' : 'Entrar';
+          b.addEventListener('click', () => {
+            $('home-code').value = game.code;
+            joinFromHome();
+          });
+          li.appendChild(b);
+        }
+        ul.appendChild(li);
+      }
+    });
+  }
+  setInterval(refreshGamesIndex, 8000);
+  socket.on('connect', refreshGamesIndex);
+
   // ============================================================ LOBBY
   function renderLobby() {
     $('lobby-code').textContent = S.code;
@@ -718,6 +767,58 @@
   }
   $('map-wrap').addEventListener('pointerdown', () => { closePanel('sidebar'); closePanel('chatpanel'); });
 
+  // ------------------------------------------------- pestañas chat/historial
+  function showTab(which) {
+    $('tab-chat').classList.toggle('active', which === 'chat');
+    $('tab-hist').classList.toggle('active', which === 'hist');
+    $('chat-msgs').classList.toggle('hidden', which !== 'chat');
+    $('chat-form').classList.toggle('hidden', which !== 'chat');
+    $('hist-list').classList.toggle('hidden', which !== 'hist');
+    if (which === 'chat') {
+      const m = $('chat-msgs');
+      m.scrollTop = m.scrollHeight;
+    }
+  }
+  on('tab-chat', 'click', () => showTab('chat'));
+  on('tab-hist', 'click', () => showTab('hist'));
+
+  // Historial por turno (lo más nuevo arriba)
+  function renderHistory() {
+    const list = $('hist-list');
+    if (!list || !S || !S.history) return;
+    list.innerHTML = '';
+    const entries = [...S.history].reverse();
+    if (!entries.length) {
+      list.innerHTML = '<p class="hint">Todavía no pasó nada. ¡Que empiece la guerra!</p>';
+      return;
+    }
+    for (const e of entries) {
+      const div = document.createElement('div');
+      div.className = 'hist-turn';
+      const head = document.createElement('div');
+      head.className = 'h-head';
+      head.innerHTML = `<span class="dot" style="background:${colorHex(e.color)}"></span>` +
+        `<span>${esc(e.name)}</span>` +
+        `<span class="h-round">${e.initial ? 'Colocación inicial' : 'Ronda ' + e.round}</span>`;
+      div.appendChild(head);
+      if (e.lines.length) {
+        const ul = document.createElement('ul');
+        for (const line of e.lines) {
+          const li = document.createElement('li');
+          li.textContent = line;
+          ul.appendChild(li);
+        }
+        div.appendChild(ul);
+      } else {
+        const em = document.createElement('div');
+        em.className = 'h-empty';
+        em.textContent = entries.indexOf(e) === 0 ? 'jugando…' : 'pasó sin novedades';
+        div.appendChild(em);
+      }
+      list.appendChild(div);
+    }
+  }
+
   // ------------------------------------------------------------ chat
   function addChatMsg(msg, scroll) {
     const div = document.createElement('div');
@@ -936,6 +1037,7 @@
     renderExtraModal();
     renderGameOver();
     renderObjectiveModal();
+    renderHistory();
     checkTurnNotify(st);
     syncPushSubscription();
   });

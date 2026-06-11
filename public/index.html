@@ -10,7 +10,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="TEG">
-<link rel="stylesheet" href="style.css?v=4">
+<link rel="stylesheet" href="style.css?v=5">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎲</text></svg>">
 </head>
 <body>
@@ -28,6 +28,10 @@
     </div>
     <p id="home-error" class="error-msg"></p>
     <button id="btn-resume" class="btn ghost hidden">↩ Volver a mi partida</button>
+    <div id="games-index" class="games-index hidden">
+      <h3 class="index-title">Partidas activas</h3>
+      <ul id="games-list"></ul>
+    </div>
   </div>
 </section>
 
@@ -103,13 +107,17 @@
     </div>
   </aside>
 
-  <!-- Chat -->
+  <!-- Chat + Historial -->
   <aside id="chatpanel" class="panel">
     <div class="panel-head">
-      <h3>Chat</h3>
+      <div class="tabs">
+        <button id="tab-chat" class="tabbtn active">💬 Chat</button>
+        <button id="tab-hist" class="tabbtn">📜 Historial</button>
+      </div>
       <button class="icon-btn panel-close" data-close="chatpanel">✕</button>
     </div>
     <div id="chat-msgs" class="panel-body chat-msgs"></div>
+    <div id="hist-list" class="panel-body hist-list hidden"></div>
     <form id="chat-form">
       <input id="chat-input" type="text" maxlength="240" placeholder="Escribí algo..." autocomplete="off">
       <button class="btn primary" type="submit">➤</button>
@@ -186,7 +194,7 @@
 </section>
 
 <script src="/socket.io/socket.io.js"></script>
-<script src="teg-data.js?v=4"></script>
-<script src="client.js?v=4"></script>
+<script src="teg-data.js?v=5"></script>
+<script src="client.js?v=5"></script>
 </body>
 </html>

@@ -33,9 +33,9 @@ if (!vapidPublic || !vapidPrivate) {
 webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:teg@silicaro.com', vapidPublic, vapidPrivate);
 app.get('/vapid-public-key', (_req, res) => res.json({ key: vapidPublic }));
 
-function sendPush(p, title, body, code) {
+function sendPush(p, title, body, tag) {
   if (!p || !p.pushSub) return;
-  const payload = JSON.stringify({ title, body, code });
+  const payload = JSON.stringify({ title, body, tag: tag || 'teg-turno' });
   webpush.sendNotification(p.pushSub, payload, { TTL: 600 }).catch((err) => {
     // 404/410: la suscripción ya no existe
     if (err.statusCode === 404 || err.statusCode === 410) p.pushSub = null;
@@ -49,7 +49,34 @@ function sendTurnPush(g) {
   const phase = (g.phase === 'inicial5' || g.phase === 'inicial3')
     ? `Te toca colocar ${g.placeLeft} ejércitos`
     : 'Te toca jugar';
-  sendPush(p, '🎲 ¡Es tu turno!', `${phase} en la partida ${g.code}.`, g.code);
+  let body = `${phase} en la partida ${g.code}.`;
+  // Resumen de lo que sufrió mientras no era su turno
+  if (p.lostCountries && p.lostCountries.length) {
+    body += ` Desde tu último turno perdiste: ${p.lostCountries.join(', ')}.`;
+  }
+  p.lostCountries = [];
+  sendPush(p, '🎲 ¡Es tu turno!', body, 'teg-turno');
+}
+
+// ------------------------------------------------ historial por turno
+
+function startHistTurn(g) {
+  const p = currentPlayer(g);
+  if (!p) return;
+  g.history.push({
+    round: g.round,
+    initial: g.phase === 'inicial5' || g.phase === 'inicial3',
+    name: p.name, color: p.color,
+    lines: []
+  });
+  if (g.history.length > 150) g.history.shift();
+}
+
+function hist(g, line) {
+  const e = g.history[g.history.length - 1];
+  if (!e) return;
+  if (e.lines.length < 80) e.lines.push(line);
+  else if (e.lines.length === 80) e.lines.push('… (turno larguísimo, se recorta)');
 }
 
 const PORT = process.env.PORT || 3000;
@@ -103,9 +130,11 @@ function createGame(code) {
     placeLeft: 0,
     reinforce: null,          // { free, conts: {cont: n} }
     conqueredThisTurn: 0,
+    placedThisReinforce: 0,
     pendingExtra: null,       // { from, to, max }
     regroupLocks: {},         // countryId -> ejércitos que ya se movieron
     chat: [],
+    history: [],              // [{ round, initial, name, color, lines: [] }]
     winner: null,
     lastActivity: Date.now()
   };
@@ -117,7 +146,7 @@ function newPlayer(name) {
     socketId: null, connected: true,
     cards: [], trades: 0,
     objective: null, effTargetId: null, objImpossible: false,
-    eliminated: false, pushSub: null
+    eliminated: false, pushSub: null, lostCountries: []
   };
 }
 
@@ -271,6 +300,7 @@ function applyCardBonus(g, p, card) {
     card.used = true;
     g.countries[card.c].a += 2;
     toast(g, `${p.name} colocó 2 ejércitos de premio en ${DATA.COUNTRIES[card.c].name} (tenía la tarjeta del país).`, 'bonus');
+    hist(g, `⭐ +2 ejércitos en ${DATA.COUNTRIES[card.c].name} (premio por tarjeta)`);
   }
 }
 
@@ -291,7 +321,9 @@ function startGame(g) {
   g.round = 0;
   g.placeLeft = 5;
   g.winner = null;
+  g.history = [];
   toast(g, `¡Arranca la partida! Primera ronda: cada jugador coloca 5 ejércitos.`, 'big');
+  startHistTurn(g);
   sendTurnPush(g);
 }
 
@@ -299,6 +331,7 @@ function advancePlacement(g) {
   if (g.turn < g.players.length - 1) {
     g.turn++;
     g.placeLeft = g.phase === 'inicial5' ? 5 : 3;
+    startHistTurn(g);
     sendTurnPush(g);
     return;
   }
@@ -307,6 +340,7 @@ function advancePlacement(g) {
     g.turn = 0;
     g.placeLeft = 3;
     toast(g, 'Segunda ronda de refuerzos: cada jugador coloca 3 ejércitos.', 'big');
+    startHistTurn(g);
     sendTurnPush(g);
     return;
   }
@@ -316,6 +350,7 @@ function advancePlacement(g) {
   g.round = 1;
   g.conqueredThisTurn = 0;
   toast(g, `¡Comienzan las hostilidades! Turno de ${currentPlayer(g).name}.`, 'big');
+  startHistTurn(g);
   sendTurnPush(g);
 }
 
@@ -332,8 +367,10 @@ function computeReinforcements(g, p) {
 function beginTurn(g) {
   const p = currentPlayer(g);
   g.conqueredThisTurn = 0;
+  g.placedThisReinforce = 0;
   g.pendingExtra = null;
   g.regroupLocks = {};
+  startHistTurn(g);
   if (g.round === 1) {
     g.phase = 'attack';
   } else {
@@ -350,7 +387,10 @@ function endTurn(g) {
   const required = p.trades >= 3 ? 2 : 1;
   if (g.conqueredThisTurn >= required) {
     const card = drawCard(g, p);
-    if (card) toast(g, `${p.name} recibió una tarjeta de país.`);
+    if (card) {
+      toast(g, `${p.name} recibió una tarjeta de país.`);
+      hist(g, '🎴 recibió una tarjeta de país');
+    }
   }
   g.pendingExtra = null;
   g.regroupLocks = {};
@@ -377,6 +417,10 @@ function win(g, p, how) {
     }))
   };
   toast(g, `🏆 ¡${p.name} ganó la partida!`, 'big');
+  hist(g, `🏆 ganó la partida (${how.toLowerCase()})`);
+  for (const q of g.players) {
+    if (q.id !== p.id) sendPush(q, '🏆 Fin de la partida', `${p.name} ganó la partida ${g.code}.`, 'teg-evento');
+  }
 }
 
 function checkVictory(g, p) {
@@ -396,6 +440,8 @@ function handleElimination(g, victim, killer) {
     toast(g, `${killer.name} hereda las tarjetas de ${victim.name}.`);
   }
   toast(g, `💀 ¡${killer.name} destruyó al ejército ${DATA.COLORS[victim.color].name.toLowerCase()} de ${victim.name}!`, 'big');
+  hist(g, `💀 destruyó al ejército ${DATA.COLORS[victim.color].name.toLowerCase()} de ${victim.name}`);
+  sendPush(victim, '💀 Te destruyeron', `${killer.name} eliminó tu ejército en la partida ${g.code}.`, 'teg-evento');
 
   // Objetivos de destrucción que apuntaban a la víctima
   for (const q of g.players) {
@@ -425,6 +471,8 @@ function doAttack(g, p, from, to) {
   A.a -= aLoss;
   D.a -= dLoss;
 
+  hist(g, `⚔️ ${DATA.COUNTRIES[from].name} ➜ ${DATA.COUNTRIES[to].name} de ${defender.name}: dados ${aDice.join('·')} vs ${dDice.join('·')} (bajas ${aLoss}-${dLoss})`);
+
   let conquered = false;
   if (D.a === 0) {
     conquered = true;
@@ -434,6 +482,10 @@ function doAttack(g, p, from, to) {
     const extraMax = Math.min(2, A.a - 1);
     g.pendingExtra = extraMax > 0 ? { from, to, max: extraMax } : null;
     toast(g, `⚔️ ${p.name} conquistó ${DATA.COUNTRIES[to].name}.`, 'conquest');
+    hist(g, `🏳️ conquistó ${DATA.COUNTRIES[to].name} (era de ${defender.name})`);
+    // Aviso al damnificado (le sirve con el teléfono bloqueado)
+    defender.lostCountries.push(DATA.COUNTRIES[to].name);
+    sendPush(defender, '⚔️ Te atacaron', `${p.name} te sacó ${DATA.COUNTRIES[to].name} en la partida ${g.code}.`, 'teg-evento');
     // Premio si tiene la tarjeta del país conquistado
     for (const card of p.cards) if (card.c === to) applyCardBonus(g, p, card);
   }
@@ -471,6 +523,7 @@ function autoResolveTurn(g) {
     let i = 0;
     while (g.reinforce.free > 0) { g.countries[own[i % own.length]].a++; g.reinforce.free--; i++; }
     g.phase = 'attack';
+    hist(g, '🪖 ejércitos incorporados automáticamente');
   }
   endTurn(g);
 }
@@ -491,6 +544,7 @@ function stateFor(g, viewer) {
     deckCount: g.deck.length,
     winner: g.winner,
     chat: g.chat.slice(-60),
+    history: g.history.slice(-50),
     players: g.players.map(p => ({
       id: p.id, name: p.name, color: p.color,
       connected: p.connected, eliminated: p.eliminated,
@@ -651,9 +705,11 @@ io.on('connection', (socket) => {
         game.reinforce.free--; ct.a++; n--; placed++;
       }
       if (placed === 0) return fail(cb, 'No te quedan ejércitos para colocar ahí.');
+      game.placedThisReinforce += placed;
       const contLeft = Object.values(game.reinforce.conts).reduce((s, v) => s + v, 0);
       if (game.reinforce.free === 0 && contLeft === 0) {
         game.phase = 'attack';
+        hist(game, `🪖 incorporó ${game.placedThisReinforce} ejércitos`);
       }
       ok(cb);
       broadcast(game);
@@ -664,7 +720,10 @@ io.on('connection', (socket) => {
     const put = Math.min(n, game.placeLeft);
     ct.a += put;
     game.placeLeft -= put;
-    if (game.placeLeft === 0) advancePlacement(game);
+    if (game.placeLeft === 0) {
+      hist(game, `🪖 colocó ${game.phase === 'inicial5' ? 5 : 3} ejércitos iniciales`);
+      advancePlacement(game);
+    }
     ok(cb);
     broadcast(game);
   });
@@ -692,6 +751,7 @@ io.on('connection', (socket) => {
       p.cards.splice(i, 1);
     });
     toast(game, `🎴 ${p.name} canjeó 3 tarjetas por ${value} ejércitos (${p.trades}º canje).`);
+    hist(game, `🎴 canjeó 3 tarjetas por ${value} ejércitos (${p.trades}º canje)`);
     ok(cb);
     broadcast(game);
   });
@@ -748,6 +808,7 @@ io.on('connection', (socket) => {
     D.a += n;
     // Los ejércitos recién movidos no pueden volver a moverse en este turno
     game.regroupLocks[to] = (game.regroupLocks[to] || 0) + n;
+    hist(game, `🔁 movió ${n} de ${DATA.COUNTRIES[from].name} a ${DATA.COUNTRIES[to].name}`);
     ok(cb);
     broadcast(game);
   });
@@ -767,6 +828,7 @@ io.on('connection', (socket) => {
     const cur = currentPlayer(game);
     if (cur.connected) return fail(cb, 'El jugador está conectado.');
     toast(game, `⏭ El anfitrión salteó el turno de ${cur.name} (desconectado).`);
+    hist(game, '⏭ turno salteado por el anfitrión (jugador desconectado)');
     autoResolveTurn(game);
     ok(cb);
     broadcast(game);
@@ -791,6 +853,23 @@ io.on('connection', (socket) => {
     toast(game, 'Nueva partida: esperando que el anfitrión la inicie.');
     ok(cb);
     broadcast(game);
+  });
+
+  socket.on('listGames', (_payload, cb) => {
+    const list = [...games.values()]
+      .sort((a, b) => b.lastActivity - a.lastActivity)
+      .slice(0, 20)
+      .map(g => ({
+        code: g.code,
+        status: g.status,
+        round: g.round,
+        currentName: g.status === 'playing' ? currentPlayer(g).name : null,
+        winnerName: g.winner ? g.winner.name : null,
+        players: g.players.map(p => ({
+          name: p.name, color: p.color, connected: p.connected, eliminated: p.eliminated
+        }))
+      }));
+    ok(cb, { games: list });
   });
 
   socket.on('pushSubscribe', ({ sub } = {}, cb) => {
