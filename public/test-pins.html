@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<!-- Página interna para verificar la posición de las fichas sobre el tablero.
+     No se enlaza desde el juego. -->
+<html>
+<head><meta charset="UTF-8"><style>body{margin:0}</style></head>
+<body>
+<svg id="m" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 858 613" width="1716" height="1226"></svg>
+<script src="teg-data.js"></script>
+<script>
+const m = document.getElementById('m');
+const NS = 'http://www.w3.org/2000/svg';
+const img = document.createElementNS(NS, 'image');
+img.setAttribute('href', 'board.jpg');
+img.setAttribute('width', 858); img.setAttribute('height', 613);
+m.appendChild(img);
+for (const c of Object.values(TEG_DATA.COUNTRIES)) {
+  const ci = document.createElementNS(NS, 'circle');
+  ci.setAttribute('cx', c.x); ci.setAttribute('cy', c.y); ci.setAttribute('r', 15);
+  ci.setAttribute('fill', '#e63946'); ci.setAttribute('fill-opacity', '0.55');
+  ci.setAttribute('stroke', '#000');
+  m.appendChild(ci);
+  const t = document.createElementNS(NS, 'text');
+  t.setAttribute('x', c.x); t.setAttribute('y', c.y + 3);
+  t.setAttribute('text-anchor', 'middle');
+  t.setAttribute('font-size', '7'); t.setAttribute('font-weight', '700');
+  t.textContent = c.id;
+  m.appendChild(t);
+}
+</script>
+</body>
+</html>

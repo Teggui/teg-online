@@ -52,6 +52,7 @@
   <header id="game-header">
     <button id="btn-sidebar" class="icon-btn" title="Jugadores">☰</button>
     <div id="turn-banner"><span id="turn-text">—</span></div>
+    <button id="btn-notif" class="icon-btn hidden" title="Avisos cuando sea tu turno">🔕</button>
     <button id="btn-chat" class="icon-btn" title="Chat">💬<span id="chat-badge" class="badge hidden"></span></button>
   </header>
 
@@ -80,8 +81,8 @@
     <div class="panel-body">
       <ul id="side-players"></ul>
       <div class="side-section">
-        <h4>Tu objetivo secreto <button id="btn-obj-toggle" class="btn tiny">👁 Mostrar</button></h4>
-        <p id="side-objective" class="objective hidden-obj">···</p>
+        <h4>Tu objetivo secreto <button id="btn-obj-toggle" class="btn tiny">🙈 Ocultar</button></h4>
+        <p id="side-objective" class="objective">···</p>
       </div>
       <div class="side-section">
         <h4>Tus tarjetas de país <span id="side-cards-count"></span></h4>
@@ -141,6 +142,15 @@
     <div class="modal-buttons">
       <button id="move-cancel" class="btn ghost">Cancelar</button>
       <button id="move-ok" class="btn primary">Mover</button>
+    </div>
+  </div>
+
+  <div id="modal-objective" class="modal hidden">
+    <h3>🤫 Tu objetivo secreto</h3>
+    <p id="obj-modal-text" class="objective"></p>
+    <p class="hint">También ganás si llegás al objetivo común: <b>ocupar 30 países</b>. No se lo muestres a nadie — siempre lo podés volver a ver en el panel ☰.</p>
+    <div class="modal-buttons">
+      <button id="btn-obj-ok" class="btn primary">¡A la guerra! 🫡</button>
     </div>
   </div>
 

@@ -12,7 +12,8 @@
   let selected = null;     // país seleccionado (origen)
   let moveCtx = null;      // { from, to, max } para el modal de reagrupe
   let placeMult = 1;       // multiplicador de colocación (×1 / ×5)
-  let objVisible = false;
+  let objVisible = true;   // el objetivo se muestra claro; se puede ocultar
+  let lastTurnPid = null;  // para detectar cambios de turno (notificaciones)
   let selCards = new Set();
   let unreadChat = 0;
   let diceQueue = [];
@@ -146,7 +147,7 @@
   });
 
   // ============================================================ MAPA SVG
-  const VB = { w: 1320, h: 700 };
+  const VB = { w: 858, h: 613 }; // dimensiones de board.jpg
   let view = { x: 0, y: 0, w: VB.w, h: VB.h };
   const map = $('map');
   const countryEls = {};
@@ -161,65 +162,27 @@
     map.setAttribute('viewBox', `0 0 ${VB.w} ${VB.h}`);
     map.innerHTML = '';
 
-    // Capas: continentes -> fronteras -> países
-    const gHulls = svgEl('g', {});
-    const gEdges = svgEl('g', {});
+    // Fondo: el tablero clásico (las fronteras y puentes ya están dibujados)
+    map.appendChild(svgEl('image', {
+      href: 'board.jpg', x: 0, y: 0, width: VB.w, height: VB.h,
+      preserveAspectRatio: 'none'
+    }));
+
     const gCountries = svgEl('g', {});
-    map.appendChild(gHulls); map.appendChild(gEdges); map.appendChild(gCountries);
+    map.appendChild(gCountries);
 
-    // Manchas de continente (caja envolvente redondeada)
-    for (const [key, cont] of Object.entries(D.CONTINENTS)) {
-      const pts = Object.values(D.COUNTRIES).filter(c => c.cont === key);
-      const xs = pts.map(c => c.x), ys = pts.map(c => c.y);
-      const x0 = Math.min(...xs) - 52, x1 = Math.max(...xs) + 52;
-      const y0 = Math.min(...ys) - 52, y1 = Math.max(...ys) + 58;
-      gHulls.appendChild(svgEl('rect', {
-        x: x0, y: y0, width: x1 - x0, height: y1 - y0, rx: 46,
-        fill: cont.hue, class: 'cont-hull'
-      }));
-      const lbl = svgEl('text', { x: (x0 + x1) / 2, y: y0 + 20, 'text-anchor': 'middle', class: 'cont-label' });
-      lbl.textContent = cont.name + ' +' + cont.bonus;
-      gHulls.appendChild(lbl);
-    }
-
-    // Fronteras
-    const seaPairs = new Set(['chile|australia', 'brasil|sahara', 'nuevayork|groenlandia',
-      'groenlandia|islandia', 'espana|sahara', 'sumatra|india', 'borneo|malasia',
-      'australia|sumatra', 'australia|java', 'australia|borneo', 'china|japon', 'kamtchatka|japon',
-      'suecia|islandia', 'granbretana|islandia', 'espana|granbretana', 'egipto|polonia',
-      'egipto|madagascar', 'zaire|madagascar', 'egipto|turquia', 'egipto|israel']);
-    function isSea(a, b) { return seaPairs.has(a + '|' + b) || seaPairs.has(b + '|' + a); }
-
-    for (const [a, b] of D.EDGES) {
-      const A = D.COUNTRIES[a], B = D.COUNTRIES[b];
-      const cls = 'edge' + (isSea(a, b) ? ' sea' : '');
-      if (a === 'alaska' && b === 'kamtchatka' || a === 'kamtchatka' && b === 'alaska') {
-        // Puente que da la vuelta al mundo: dos tramos hacia los bordes
-        gEdges.appendChild(svgEl('path', { d: `M ${A.x} ${A.y} L 8 ${A.y}`, class: 'edge sea' }));
-        gEdges.appendChild(svgEl('path', { d: `M ${B.x} ${B.y} L ${VB.w - 8} ${B.y}`, class: 'edge sea' }));
-        continue;
-      }
-      if ((a === 'chile' && b === 'australia') || (a === 'australia' && b === 'chile')) {
-        const C1 = D.COUNTRIES.chile, C2 = D.COUNTRIES.australia;
-        gEdges.appendChild(svgEl('path', {
-          d: `M ${C1.x} ${C1.y} Q ${(C1.x + C2.x) / 2} ${VB.h - 6} ${C2.x} ${C2.y}`, class: 'edge sea'
-        }));
-        continue;
-      }
-      gEdges.appendChild(svgEl('path', { d: `M ${A.x} ${A.y} L ${B.x} ${B.y}`, class: cls }));
-    }
-
-    // Países
+    // Fichas sobre cada país
     for (const c of Object.values(D.COUNTRIES)) {
       const g = svgEl('g', { class: 'country', 'data-id': c.id });
-      g.appendChild(svgEl('circle', { class: 'ring', cx: c.x, cy: c.y, r: 30 }));
-      g.appendChild(svgEl('circle', { class: 'body', cx: c.x, cy: c.y, r: 23, fill: '#39414f' }));
+      g.appendChild(svgEl('circle', { cx: c.x, cy: c.y, r: 24, fill: 'transparent' })); // zona táctil
+      g.appendChild(svgEl('circle', { class: 'ring', cx: c.x, cy: c.y, r: 21 }));
+      g.appendChild(svgEl('circle', { class: 'body', cx: c.x, cy: c.y, r: 15, fill: '#39414f' }));
       const troops = svgEl('text', { class: 'troops', x: c.x, y: c.y, fill: '#fff' });
       troops.textContent = '';
       g.appendChild(troops);
-      const name = svgEl('text', { class: 'cname', x: c.x, y: c.y + 38 });
-      name.textContent = c.name;
-      g.appendChild(name);
+      const title = svgEl('title', {});
+      title.textContent = c.name;
+      g.appendChild(title);
       g.addEventListener('click', (e) => { e.stopPropagation(); onCountryTap(c.id); });
       gCountries.appendChild(g);
       countryEls[c.id] = g;
@@ -493,9 +456,11 @@
     if (myTurn()) {
       banner.classList.add('my-turn');
       txt.textContent = `▶ ¡Tu turno! (${phaseName(S.phase)}) · Ronda ${Math.max(1, S.round)}`;
+      document.title = '🎲 ¡Tu turno! — TEG';
     } else {
       banner.classList.remove('my-turn');
       txt.textContent = `Turno de ${cur.name} · ${phaseName(S.phase)}`;
+      document.title = 'TEG · Plan Táctico y Estratégico de la Guerra';
     }
   }
 
@@ -577,6 +542,66 @@
     const cur = player(S.currentPlayerId);
     $('btn-skip').classList.toggle('hidden',
       !(isHost() && S.status === 'playing' && cur && !cur.connected && cur.id !== S.you.id));
+  }
+
+  // ------------------------------------------------------- notificaciones
+  const notifSupported = 'Notification' in window;
+  function notifOn() {
+    return notifSupported && localStorage.getItem('teg-notif') === '1' && Notification.permission === 'granted';
+  }
+  function renderNotifBtn() {
+    if (!notifSupported) return; // iOS Safari (sin instalar como app) no lo soporta
+    $('btn-notif').classList.remove('hidden');
+    $('btn-notif').textContent = notifOn() ? '🔔' : '🔕';
+  }
+  if (notifSupported) renderNotifBtn();
+  $('btn-notif').addEventListener('click', async () => {
+    if (notifOn()) {
+      localStorage.setItem('teg-notif', '0');
+      showToast('🔕 Avisos de turno desactivados.');
+    } else {
+      const perm = await Notification.requestPermission();
+      if (perm === 'granted') {
+        localStorage.setItem('teg-notif', '1');
+        showToast('🔔 Te vamos a avisar cuando se acerque tu turno.', 'big');
+      } else {
+        showToast('El navegador bloqueó las notificaciones (revisá los permisos del sitio).');
+      }
+    }
+    renderNotifBtn();
+  });
+  function notify(title, body) {
+    if (!notifOn()) return;
+    if (!document.hidden && document.hasFocus()) return; // ya estás mirando
+    try {
+      const n = new Notification(title, { body, tag: 'teg-turno', renotify: true });
+      n.onclick = () => { window.focus(); n.close(); };
+    } catch (e) { /* algunos navegadores piden service worker; lo ignoramos */ }
+  }
+  function nextAlivePlayer(st) {
+    // el orden de st.players ES el orden de turnos
+    const idx = st.players.findIndex(p => p.id === st.currentPlayerId);
+    if (idx < 0) return null;
+    for (let k = 1; k <= st.players.length; k++) {
+      const p = st.players[(idx + k) % st.players.length];
+      if (!p.eliminated) return p;
+    }
+    return null;
+  }
+  function checkTurnNotify(st) {
+    if (st.status !== 'playing' || !st.you || st.currentPlayerId === lastTurnPid) return;
+    const prev = lastTurnPid;
+    lastTurnPid = st.currentPlayerId;
+    if (prev === null) return; // primer estado tras cargar: no avisar
+    if (st.currentPlayerId === st.you.id) {
+      notify('🎲 ¡Es tu turno!', `Te toca jugar en la partida ${st.code}.`);
+    } else {
+      const nx = nextAlivePlayer(st);
+      const cur = st.players.find(p => p.id === st.currentPlayerId);
+      if (nx && nx.id === st.you.id) {
+        notify('⏳ Sos el próximo', `Está jugando ${cur ? cur.name : 'otro'} y después venís vos.`);
+      }
+    }
   }
 
   $('btn-obj-toggle').addEventListener('click', () => {
@@ -750,6 +775,27 @@
     });
   });
 
+  // Al empezar la partida (países ya repartidos), el objetivo se muestra claro
+  function renderObjectiveModal() {
+    if (!S || S.status !== 'playing' || !S.you || !S.you.objective) return;
+    const marker = S.code + '|' + S.you.objective.text;
+    if (localStorage.getItem('teg-obj-seen') === marker) return;
+    let html = esc(S.you.objective.text);
+    if (S.you.objective.type === 'destroy' && S.you.objective.targetName) {
+      html += `<span class="obj-extra">→ En esta partida tu blanco es: <b>${esc(S.you.objective.targetName)}</b></span>`;
+    }
+    $('obj-modal-text').innerHTML = html;
+    $('modal-objective').classList.remove('hidden');
+    showOverlay(true);
+  }
+  $('btn-obj-ok').addEventListener('click', () => {
+    if (S && S.you && S.you.objective) {
+      localStorage.setItem('teg-obj-seen', S.code + '|' + S.you.objective.text);
+    }
+    $('modal-objective').classList.add('hidden');
+    syncOverlay();
+  });
+
   function renderGameOver() {
     const show = S && S.status === 'finished' && S.winner;
     $('modal-gameover').classList.toggle('hidden', !show);
@@ -775,7 +821,8 @@
   $('btn-exit').addEventListener('click', () => { session.clear(); location.reload(); });
 
   function syncOverlay() {
-    const any = ['modal-extra', 'modal-move', 'modal-gameover'].some(id => !$(id).classList.contains('hidden'));
+    const any = ['modal-extra', 'modal-move', 'modal-gameover', 'modal-objective']
+      .some(id => !$(id).classList.contains('hidden'));
     showOverlay(any);
   }
 
@@ -802,6 +849,8 @@
     renderSidebar();
     renderExtraModal();
     renderGameOver();
+    renderObjectiveModal();
+    checkTurnNotify(st);
   });
 
   function esc(s) {
