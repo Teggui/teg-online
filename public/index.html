@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#0e1116">
 <title>TEG · Plan Táctico y Estratégico de la Guerra</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=3">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎲</text></svg>">
 </head>
 <body>
@@ -52,6 +52,7 @@
   <header id="game-header">
     <button id="btn-sidebar" class="icon-btn" title="Jugadores">☰</button>
     <div id="turn-banner"><span id="turn-text">—</span></div>
+    <button id="btn-objective" class="icon-btn" title="Ver mi objetivo">🎯</button>
     <button id="btn-notif" class="icon-btn hidden" title="Avisos cuando sea tu turno">🔕</button>
     <button id="btn-chat" class="icon-btn" title="Chat">💬<span id="chat-badge" class="badge hidden"></span></button>
   </header>
@@ -166,7 +167,7 @@
 </section>
 
 <script src="/socket.io/socket.io.js"></script>
-<script src="teg-data.js"></script>
-<script src="client.js"></script>
+<script src="teg-data.js?v=3"></script>
+<script src="client.js?v=3"></script>
 </body>
 </html>

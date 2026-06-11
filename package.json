@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "smoke": "node scripts/smoke.js"
+    "smoke": "node scripts/smoke.js",
+    "test:ui": "node scripts/ui-test.js"
   },
   "engines": {
     "node": ">=18"
@@ -15,6 +16,7 @@
     "socket.io": "^4.7.5"
   },
   "devDependencies": {
+    "puppeteer-core": "^25.1.0",
     "socket.io-client": "^4.7.5"
   },
   "license": "MIT"

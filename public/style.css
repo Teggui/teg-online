@@ -147,7 +147,9 @@ input:focus { border-color: #4895ef; }
 }
 #sidebar { left: 0; border-left: none; border-right: 1px solid #232a37; transform: translateX(-105%); box-shadow: 8px 0 30px #00000088; }
 #chatpanel { right: 0; transform: translateX(105%); }
-.panel.open { transform: translateX(0); }
+/* Los ids de abajo (#sidebar/#chatpanel) pesan más que .panel.open,
+   así que la regla de apertura también necesita el id. */
+#sidebar.open, #chatpanel.open { transform: translateX(0); }
 .panel-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 12px 14px; border-bottom: 1px solid #232a37;

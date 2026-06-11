@@ -5,6 +5,9 @@
   const D = window.TEG_DATA;
   const socket = io();
   const $ = (id) => document.getElementById(id);
+  // Enlace tolerante: si el elemento no existe (HTML viejo en caché),
+  // no rompe el resto del script.
+  const on = (id, ev, fn) => { const el = $(id); if (el) el.addEventListener(ev, fn); };
   const SVGNS = 'http://www.w3.org/2000/svg';
 
   // ------------------------------------------------------------ estado local
@@ -550,12 +553,12 @@
     return notifSupported && localStorage.getItem('teg-notif') === '1' && Notification.permission === 'granted';
   }
   function renderNotifBtn() {
-    if (!notifSupported) return; // iOS Safari (sin instalar como app) no lo soporta
+    if (!notifSupported || !$('btn-notif')) return; // iOS Safari (sin instalar como app) no lo soporta
     $('btn-notif').classList.remove('hidden');
     $('btn-notif').textContent = notifOn() ? '🔔' : '🔕';
   }
   if (notifSupported) renderNotifBtn();
-  $('btn-notif').addEventListener('click', async () => {
+  on('btn-notif', 'click', async () => {
     if (notifOn()) {
       localStorage.setItem('teg-notif', '0');
       showToast('🔕 Avisos de turno desactivados.');
@@ -775,20 +778,33 @@
     });
   });
 
-  // Al empezar la partida (países ya repartidos), el objetivo se muestra claro
+  // Al empezar la partida (países ya repartidos), el objetivo se muestra claro;
+  // el botón 🎯 del encabezado lo vuelve a mostrar cuando quieras.
+  function objectiveHtml() {
+    const o = S.you.objective;
+    let html = esc(o.text);
+    if (o.type === 'destroy' && o.targetName && !o.impossible) {
+      html += `<span class="obj-extra">→ En esta partida tu blanco es: <b>${esc(o.targetName)}</b></span>`;
+    }
+    if (o.impossible) {
+      html += '<span class="obj-extra">⚠️ Otro destruyó a tu blanco: ahora tu meta es el objetivo común (30 países).</span>';
+    }
+    return html;
+  }
+  function showObjectiveModal() {
+    if (!S || S.status !== 'playing' || !S.you || !S.you.objective) return;
+    $('obj-modal-text').innerHTML = objectiveHtml();
+    $('modal-objective').classList.remove('hidden');
+    showOverlay(true);
+  }
   function renderObjectiveModal() {
     if (!S || S.status !== 'playing' || !S.you || !S.you.objective) return;
     const marker = S.code + '|' + S.you.objective.text;
     if (localStorage.getItem('teg-obj-seen') === marker) return;
-    let html = esc(S.you.objective.text);
-    if (S.you.objective.type === 'destroy' && S.you.objective.targetName) {
-      html += `<span class="obj-extra">→ En esta partida tu blanco es: <b>${esc(S.you.objective.targetName)}</b></span>`;
-    }
-    $('obj-modal-text').innerHTML = html;
-    $('modal-objective').classList.remove('hidden');
-    showOverlay(true);
+    showObjectiveModal();
   }
-  $('btn-obj-ok').addEventListener('click', () => {
+  on('btn-objective', 'click', showObjectiveModal);
+  on('btn-obj-ok', 'click', () => {
     if (S && S.you && S.you.objective) {
       localStorage.setItem('teg-obj-seen', S.code + '|' + S.you.objective.text);
     }

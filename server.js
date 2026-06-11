@@ -135,12 +135,12 @@ function playerToRight(g, p) {
 }
 
 function assignObjectives(g) {
-  if (g.players.length === 2) {
-    // Variante 2 jugadores: solo el objetivo común.
-    for (const p of g.players) p.objective = { type: 'common', text: 'Ocupar 30 países.' };
-    return;
-  }
-  const deck = shuffle(DATA.OBJECTIVES.map(o => ({ ...o })));
+  // Con 2 jugadores se reparten solo objetivos de ocupación: destruir al
+  // único rival equivale a ganar igual, y así hay metas más cortas que 30 países.
+  const pool = g.players.length === 2
+    ? DATA.OBJECTIVES.filter(o => o.type === 'occupy')
+    : DATA.OBJECTIVES;
+  const deck = shuffle(pool.map(o => ({ ...o })));
   for (const p of g.players) {
     // Si un objetivo de ocupación ya está cumplido con el reparto inicial
     // (posible con pocos jugadores), se devuelve al mazo y se toma otro.
