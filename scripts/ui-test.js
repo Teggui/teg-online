@@ -45,15 +45,21 @@ async function main() {
   const A = await newPage(browser, 'A');
   const B = await newPage(browser, 'B');
 
-  // A crea la sala
-  await A.type('#home-name', 'Ana');
+  // B intenta crear con otro nombre: debe ser rechazado
+  await B.type('#home-name', 'Beto');
+  await B.click('#btn-create');
+  await B.waitForFunction(() => document.getElementById('home-error').textContent.length > 0, { timeout: 4000 });
+  const errCrear = await B.$eval('#home-error', (el) => el.textContent);
+  check(/MarcoLaTota/.test(errCrear), 'otro nombre NO puede crear partidas');
+
+  // A crea la sala (con el nombre habilitado)
+  await A.type('#home-name', 'MarcoLaTota');
   await A.click('#btn-create');
   await A.waitForSelector('#screen-lobby.active', { timeout: 5000 });
   const code = await A.$eval('#lobby-code', (el) => el.textContent.trim());
   check(/^[A-Z2-9]{6}$/.test(code), `código de sala (${code})`);
 
   // B se une
-  await B.type('#home-name', 'Beto');
   await B.type('#home-code', code);
   await B.click('#btn-join');
   await B.waitForSelector('#screen-lobby.active', { timeout: 5000 });

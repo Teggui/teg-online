@@ -53,6 +53,8 @@ function sendTurnPush(g) {
 }
 
 const PORT = process.env.PORT || 3000;
+// Solo este nombre puede crear partidas (configurable por entorno)
+const CREATOR_NAME = process.env.TEG_CREATOR || 'MarcoLaTota';
 
 // ---------------------------------------------------------------- utilidades
 
@@ -168,30 +170,75 @@ function playerToRight(g, p) {
   return g.players[(idx - 1 + n) % n];
 }
 
+const CONTINENT_SIZE = {};
+for (const c of COUNTRY_IDS) {
+  const k = DATA.COUNTRIES[c].cont;
+  CONTINENT_SIZE[k] = (CONTINENT_SIZE[k] || 0) + 1;
+}
+
+function resolveDestroyTarget(g, p, o) {
+  const target = g.players.find(q => q.color === o.color);
+  // Color propio o ausente: el objetivo pasa al jugador de la derecha.
+  return (!target || target.id === p.id) ? playerToRight(g, p) : target;
+}
+
+// Cuántos países más necesita este jugador para cumplir el objetivo,
+// dado el reparto inicial. Es la medida de dificultad del reparto.
+function objectiveDeficit(g, p, o) {
+  if (o.type === 'destroy') {
+    // Destruir un color ≈ alguien tiene que sacarle todos sus países
+    // (y va a crecer): se estima con sus países iniciales más un margen.
+    const target = resolveDestroyTarget(g, p, o);
+    return countriesOf(g, target.id).length + 2;
+  }
+  const byCont = countByContinent(g, p.id);
+  let d = 0;
+  for (const cont of o.continents || []) d += CONTINENT_SIZE[cont] - (byCont[cont] || 0);
+  for (const [cont, n] of Object.entries(o.counts || {})) d += Math.max(0, n - (byCont[cont] || 0));
+  if (o.triangle && !hasTriangle(g, p.id)) d += 1;
+  return d;
+}
+
 function assignObjectives(g) {
   // Con 2 jugadores se reparten solo objetivos de ocupación: destruir al
   // único rival equivale a ganar igual, y así hay metas más cortas que 30 países.
-  const pool = g.players.length === 2
+  const pool = (g.players.length === 2
     ? DATA.OBJECTIVES.filter(o => o.type === 'occupy')
-    : DATA.OBJECTIVES;
-  const deck = shuffle(pool.map(o => ({ ...o })));
+    : DATA.OBJECTIVES).map(o => ({ ...o }));
+
+  // Reparto equilibrado: a cada jugador se le da un objetivo cuya dificultad
+  // restante (países que le faltan HOY) esté lo más cerca posible de la
+  // mediana general. Nadie arranca con un objetivo casi cumplido (mínimo 4)
+  // ni con uno desproporcionado respecto al resto.
+  const MIN_DEFICIT = 4;
+  const table = new Map(); // playerId -> [{ o, d }]
+  const allDeficits = [];
   for (const p of g.players) {
-    // Si un objetivo de ocupación ya está cumplido con el reparto inicial
-    // (posible con pocos jugadores), se devuelve al mazo y se toma otro.
-    let guard = deck.length;
-    while (guard-- > 0) {
-      const o = deck.shift();
-      if (o.type === 'occupy' && occupationSatisfied(g, p.id, o)) { deck.push(o); continue; }
-      p.objective = o;
-      break;
-    }
-    if (!p.objective) p.objective = { type: 'common', text: 'Ocupar 30 países.' };
+    const list = pool.map(o => ({ o, d: objectiveDeficit(g, p, o) }));
+    table.set(p.id, list);
+    for (const e of list) if (e.d >= MIN_DEFICIT) allDeficits.push(e.d);
+  }
+  allDeficits.sort((a, b) => a - b);
+  const median = allDeficits.length ? allDeficits[Math.floor(allDeficits.length / 2)] : 12;
+
+  const used = new Set();
+  for (const p of shuffle(g.players.slice())) {
+    let opts = table.get(p.id).filter(e => !used.has(e.o.id) && e.d >= MIN_DEFICIT);
+    if (!opts.length) opts = table.get(p.id).filter(e => !used.has(e.o.id));
+    if (!opts.length) { p.objective = { type: 'common', text: 'Ocupar 30 países.' }; continue; }
+    opts.sort((a, b) => Math.abs(a.d - median) - Math.abs(b.d - median));
+    const bestDist = Math.abs(opts[0].d - median);
+    const best = opts.filter(e => Math.abs(e.d - median) === bestDist);
+    const pick = best[crypto.randomInt(0, best.length)];
+    p.objective = pick.o;
+    used.add(pick.o.id);
     if (p.objective.type === 'destroy') {
-      const target = g.players.find(q => q.color === p.objective.color);
-      // Color propio o ausente: el objetivo pasa al jugador de la derecha.
-      p.effTargetId = (!target || target.id === p.id) ? playerToRight(g, p).id : target.id;
+      p.effTargetId = resolveDestroyTarget(g, p, p.objective).id;
     }
   }
+  console.log(`[${g.code}] objetivos repartidos (mediana ${median}): ` + g.players.map(p =>
+    `${p.name}→#${p.objective.id || '-'} faltan ${p.objective.type === 'common' ? '?' : objectiveDeficit(g, p, p.objective)}`
+  ).join(' · '));
 }
 
 // ---------------------------------------------------------------- mensajes
@@ -508,6 +555,9 @@ io.on('connection', (socket) => {
   socket.on('createRoom', ({ name } = {}, cb) => {
     name = String(name || '').trim().slice(0, 18);
     if (!name) return fail(cb, 'Poné tu nombre.');
+    if (name.toLowerCase() !== CREATOR_NAME.toLowerCase()) {
+      return fail(cb, `Solo ${CREATOR_NAME} puede crear partidas. Pedile el código y unite con "Unirse".`);
+    }
     const g = createGame(newRoomCode());
     const p = newPlayer(name);
     p.color = Object.keys(DATA.COLORS)[0];

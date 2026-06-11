@@ -49,13 +49,17 @@ async function main() {
   const bots = [];
   for (let i = 0; i < N_PLAYERS; i++) {
     const socket = io(URL, { transports: ['websocket'] });
-    const bot = { i, name: 'Bot' + (i + 1), socket, state: null, busy: false };
+    // solo MarcoLaTota puede crear; el resto se une
+    const bot = { i, name: i === 0 ? 'MarcoLaTota' : 'Bot' + (i + 1), socket, state: null, busy: false };
     socket.on('state', (st) => { bot.state = st; });
     bots.push(bot);
     await new Promise((r) => socket.on('connect', r));
   }
 
   const host = bots[0];
+  const denied = await emit(bots[1].socket, 'createRoom', { name: bots[1].name });
+  if (!denied.error) fatal('un nombre cualquiera pudo crear partida (debería estar restringido)');
+  console.log('OK: solo MarcoLaTota puede crear partidas.');
   const created = mustOk(await emit(host.socket, 'createRoom', { name: host.name }), 'createRoom');
   const code = created.code;
   console.log('Sala creada:', code);
