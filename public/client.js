@@ -20,8 +20,15 @@
 
   const session = {
     load() { try { return JSON.parse(localStorage.getItem('teg-session')) || null; } catch (e) { return null; } },
-    save(code, token, name) { localStorage.setItem('teg-session', JSON.stringify({ code, token, name })); },
-    clear() { localStorage.removeItem('teg-session'); }
+    save(code, token, name) {
+      localStorage.setItem('teg-session', JSON.stringify({ code, token, name }));
+      this.claim(token);
+    },
+    clear() { localStorage.removeItem('teg-session'); sessionStorage.removeItem('teg-own'); },
+    // Cada pestaña "posee" un asiento: evita que una segunda pestaña del mismo
+    // navegador le robe el lugar a la primera al auto-reconectar.
+    claim(token) { sessionStorage.setItem('teg-own', token); },
+    owns(ss) { return !!ss && sessionStorage.getItem('teg-own') === ss.token; }
   };
 
   function colorHex(key) { return (D.COLORS[key] || {}).hex || '#888'; }
@@ -72,14 +79,16 @@
     if (!ss) return;
     socket.emit('rejoin', { code: ss.code, token: ss.token }, (res) => {
       if (res.error) { $('home-error').textContent = res.error; session.clear(); $('btn-resume').classList.add('hidden'); }
+      else session.claim(ss.token);
     });
   });
 
-  // Reconexión automática: al conectar (o reconectar), si hay sesión guardada
-  // se intenta retomar el lugar en silencio.
+  // Reconexión automática: solo si esta pestaña es la dueña del asiento.
+  // Una segunda pestaña queda en la pantalla de inicio (puede entrar como
+  // otro jugador, o retomar el asiento a mano con el botón "Volver").
   socket.on('connect', () => {
     const ss = session.load();
-    if (ss) socket.emit('rejoin', { code: ss.code, token: ss.token }, () => {});
+    if (session.owns(ss)) socket.emit('rejoin', { code: ss.code, token: ss.token }, () => {});
   });
 
   // ============================================================ LOBBY
