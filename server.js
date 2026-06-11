@@ -9,6 +9,7 @@ const http = require('http');
 const crypto = require('crypto');
 const express = require('express');
 const { Server } = require('socket.io');
+const webpush = require('web-push');
 const DATA = require('./public/teg-data.js');
 
 const app = express();
@@ -17,6 +18,39 @@ const io = new Server(server, { pingTimeout: 30000, pingInterval: 10000 });
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/health', (_req, res) => res.json({ ok: true }));
+
+// ---- Web Push (avisos de turno con el teléfono bloqueado) ----
+// En producción las claves van en variables de entorno; sin ellas se generan
+// efímeras (las suscripciones mueren con cada reinicio).
+let vapidPublic = process.env.VAPID_PUBLIC_KEY;
+let vapidPrivate = process.env.VAPID_PRIVATE_KEY;
+if (!vapidPublic || !vapidPrivate) {
+  const keys = webpush.generateVAPIDKeys();
+  vapidPublic = keys.publicKey;
+  vapidPrivate = keys.privateKey;
+  console.log('AVISO: VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY no configuradas; usando claves efímeras.');
+}
+webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:teg@silicaro.com', vapidPublic, vapidPrivate);
+app.get('/vapid-public-key', (_req, res) => res.json({ key: vapidPublic }));
+
+function sendPush(p, title, body, code) {
+  if (!p || !p.pushSub) return;
+  const payload = JSON.stringify({ title, body, code });
+  webpush.sendNotification(p.pushSub, payload, { TTL: 600 }).catch((err) => {
+    // 404/410: la suscripción ya no existe
+    if (err.statusCode === 404 || err.statusCode === 410) p.pushSub = null;
+  });
+}
+
+function sendTurnPush(g) {
+  if (g.status !== 'playing') return;
+  const p = currentPlayer(g);
+  if (!p) return;
+  const phase = (g.phase === 'inicial5' || g.phase === 'inicial3')
+    ? `Te toca colocar ${g.placeLeft} ejércitos`
+    : 'Te toca jugar';
+  sendPush(p, '🎲 ¡Es tu turno!', `${phase} en la partida ${g.code}.`, g.code);
+}
 
 const PORT = process.env.PORT || 3000;
 
@@ -81,7 +115,7 @@ function newPlayer(name) {
     socketId: null, connected: true,
     cards: [], trades: 0,
     objective: null, effTargetId: null, objImpossible: false,
-    eliminated: false
+    eliminated: false, pushSub: null
   };
 }
 
@@ -211,12 +245,14 @@ function startGame(g) {
   g.placeLeft = 5;
   g.winner = null;
   toast(g, `¡Arranca la partida! Primera ronda: cada jugador coloca 5 ejércitos.`, 'big');
+  sendTurnPush(g);
 }
 
 function advancePlacement(g) {
   if (g.turn < g.players.length - 1) {
     g.turn++;
     g.placeLeft = g.phase === 'inicial5' ? 5 : 3;
+    sendTurnPush(g);
     return;
   }
   if (g.phase === 'inicial5') {
@@ -224,6 +260,7 @@ function advancePlacement(g) {
     g.turn = 0;
     g.placeLeft = 3;
     toast(g, 'Segunda ronda de refuerzos: cada jugador coloca 3 ejércitos.', 'big');
+    sendTurnPush(g);
     return;
   }
   // Empiezan las hostilidades (ronda 1: sin incorporación de ejércitos)
@@ -232,6 +269,7 @@ function advancePlacement(g) {
   g.round = 1;
   g.conqueredThisTurn = 0;
   toast(g, `¡Comienzan las hostilidades! Turno de ${currentPlayer(g).name}.`, 'big');
+  sendTurnPush(g);
 }
 
 function computeReinforcements(g, p) {
@@ -276,6 +314,7 @@ function endTurn(g) {
   if (i <= g.turn) g.round++;
   g.turn = i;
   beginTurn(g);
+  sendTurnPush(g);
 }
 
 function win(g, p, how) {
@@ -702,6 +741,20 @@ io.on('connection', (socket) => {
     toast(game, 'Nueva partida: esperando que el anfitrión la inicie.');
     ok(cb);
     broadcast(game);
+  });
+
+  socket.on('pushSubscribe', ({ sub } = {}, cb) => {
+    if (!game || !me) return fail(cb, 'No estás en una partida.');
+    if (!sub || typeof sub.endpoint !== 'string' || !/^https:\/\//.test(sub.endpoint)) {
+      return fail(cb, 'Suscripción inválida.');
+    }
+    me.pushSub = sub;
+    ok(cb);
+  });
+
+  socket.on('pushUnsubscribe', (_payload, cb) => {
+    if (me) me.pushSub = null;
+    ok(cb);
   });
 
   socket.on('chat', ({ text } = {}) => {

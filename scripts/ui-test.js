@@ -20,6 +20,7 @@ function check(cond, label) {
 
 async function newPage(browser, name) {
   const ctx = await browser.createBrowserContext();
+  await ctx.overridePermissions(URL, ['notifications']);
   const page = await ctx.newPage();
   await page.setViewport({ width: 390, height: 844 }); // celular
   page.on('pageerror', (e) => { console.log(`[${name}] ERROR JS:`, e.message); failures++; });
@@ -107,6 +108,28 @@ async function main() {
   await B.waitForFunction(
     () => document.getElementById('chat-msgs').textContent.includes('hola beto'), { timeout: 4000 });
   check(true, 'el mensaje de chat llega al otro jugador');
+  await A.click('#chatpanel .panel-close');
+  await new Promise((r) => setTimeout(r, 350));
+
+  // Service worker + campanita de avisos
+  const swOk = await A.evaluate(async () => {
+    const reg = await navigator.serviceWorker.getRegistration();
+    return !!reg;
+  });
+  check(swOk, 'el service worker se registra');
+  const vapid = await A.evaluate(async () => (await (await fetch('/vapid-public-key')).json()).key);
+  check(typeof vapid === 'string' && vapid.length > 40, 'el servidor expone la clave VAPID');
+  await A.click('#btn-notif');
+  await new Promise((r) => setTimeout(r, 800));
+  const bellOn = await A.$eval('#btn-notif', (el) => el.textContent.trim());
+  if (bellOn !== '🔔') {
+    console.log('debug campanita:', await A.evaluate(() => ({
+      perm: Notification.permission,
+      notif: localStorage.getItem('teg-notif'),
+      push: localStorage.getItem('teg-push')
+    })));
+  }
+  check(bellOn === '🔔', 'la campanita queda activada (permiso concedido)');
 
   // El jugador en turno puede colocar ejércitos tocando el mapa
   const turnPage = (await A.evaluate(() => document.getElementById('turn-banner').classList.contains('my-turn'))) ? A : B;

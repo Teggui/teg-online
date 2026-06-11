@@ -548,33 +548,103 @@
   }
 
   // ------------------------------------------------------- notificaciones
+  // Dos niveles: notificación en la página (pestaña abierta en 2º plano) y
+  // Web Push vía service worker (sirve con el teléfono bloqueado).
   const notifSupported = 'Notification' in window;
+  const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+
   function notifOn() {
     return notifSupported && localStorage.getItem('teg-notif') === '1' && Notification.permission === 'granted';
   }
+  function pushOn() { return notifOn() && localStorage.getItem('teg-push') === '1'; }
+
   function renderNotifBtn() {
-    if (!notifSupported || !$('btn-notif')) return; // iOS Safari (sin instalar como app) no lo soporta
+    if (!$('btn-notif')) return;
     $('btn-notif').classList.remove('hidden');
     $('btn-notif').textContent = notifOn() ? '🔔' : '🔕';
   }
-  if (notifSupported) renderNotifBtn();
+  renderNotifBtn();
+
+  function urlB64ToU8(base64) {
+    const padding = '='.repeat((4 - (base64.length % 4)) % 4);
+    const raw = atob((base64 + padding).replace(/-/g, '+').replace(/_/g, '/'));
+    return Uint8Array.from([...raw].map((ch) => ch.charCodeAt(0)));
+  }
+
+  async function subscribePush() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return false;
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const res = await fetch('/vapid-public-key');
+      const { key } = await res.json();
+      if (!key) return false;
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlB64ToU8(key)
+      });
+      socket.emit('pushSubscribe', { sub: sub.toJSON() }, () => {});
+      localStorage.setItem('teg-push', '1');
+      return true;
+    } catch (e) {
+      localStorage.setItem('teg-push', '0');
+      return false;
+    }
+  }
+
+  async function unsubscribePush() {
+    localStorage.setItem('teg-push', '0');
+    socket.emit('pushUnsubscribe', {}, () => {});
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) await sub.unsubscribe();
+    } catch (e) { /* sin drama */ }
+  }
+
   on('btn-notif', 'click', async () => {
+    if (!notifSupported) {
+      // iPhone/iPad en Safari "de pestaña": hay que instalar el juego primero
+      if (isIOS) { $('modal-ios').classList.remove('hidden'); showOverlay(true); }
+      else showToast('Este navegador no soporta notificaciones.');
+      return;
+    }
     if (notifOn()) {
       localStorage.setItem('teg-notif', '0');
+      await unsubscribePush();
       showToast('🔕 Avisos de turno desactivados.');
     } else {
       const perm = await Notification.requestPermission();
       if (perm === 'granted') {
         localStorage.setItem('teg-notif', '1');
-        showToast('🔔 Te vamos a avisar cuando se acerque tu turno.', 'big');
+        const push = await subscribePush();
+        showToast(push
+          ? '🔔 Listo: te avisamos cuando sea tu turno, incluso con el teléfono bloqueado.'
+          : '🔔 Avisos activados (con esta pestaña abierta).', 'big');
       } else {
         showToast('El navegador bloqueó las notificaciones (revisá los permisos del sitio).');
       }
     }
     renderNotifBtn();
   });
+  on('btn-ios-ok', 'click', () => { $('modal-ios').classList.add('hidden'); syncOverlay(); });
+
+  // Si ya teníamos push activado, re-enviar la suscripción al (re)entrar
+  // a la partida (el servidor pudo haberse reiniciado).
+  let pushSynced = false;
+  function syncPushSubscription() {
+    if (pushSynced || !pushOn()) return;
+    pushSynced = true;
+    subscribePush();
+  }
+
   function notify(title, body) {
     if (!notifOn()) return;
+    if (pushOn()) return; // el service worker ya se encarga (evita duplicados)
     if (!document.hidden && document.hasFocus()) return; // ya estás mirando
     try {
       const n = new Notification(title, { body, tag: 'teg-turno', renotify: true });
@@ -837,8 +907,8 @@
   $('btn-exit').addEventListener('click', () => { session.clear(); location.reload(); });
 
   function syncOverlay() {
-    const any = ['modal-extra', 'modal-move', 'modal-gameover', 'modal-objective']
-      .some(id => !$(id).classList.contains('hidden'));
+    const any = ['modal-extra', 'modal-move', 'modal-gameover', 'modal-objective', 'modal-ios']
+      .some(id => $(id) && !$(id).classList.contains('hidden'));
     showOverlay(any);
   }
 
@@ -867,6 +937,7 @@
     renderGameOver();
     renderObjectiveModal();
     checkTurnNotify(st);
+    syncPushSubscription();
   });
 
   function esc(s) {

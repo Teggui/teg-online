@@ -5,7 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#0e1116">
 <title>TEG · Plan Táctico y Estratégico de la Guerra</title>
-<link rel="stylesheet" href="style.css?v=3">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="TEG">
+<link rel="stylesheet" href="style.css?v=4">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎲</text></svg>">
 </head>
 <body>
@@ -146,6 +151,20 @@
     </div>
   </div>
 
+  <div id="modal-ios" class="modal hidden">
+    <h3>🔔 Avisos en iPhone</h3>
+    <p>Safari solo permite notificaciones si el juego está <b>instalado en tu pantalla de inicio</b>:</p>
+    <ol style="line-height:1.7; padding-left:20px; margin:8px 0">
+      <li>Tocá <b>Compartir</b> (el cuadradito con flecha)</li>
+      <li>Elegí <b>"Agregar a pantalla de inicio"</b></li>
+      <li>Abrí <b>TEG</b> desde el ícono nuevo</li>
+      <li>Entrá a la partida y tocá la campanita 🔔</li>
+    </ol>
+    <div class="modal-buttons">
+      <button id="btn-ios-ok" class="btn primary">Entendido</button>
+    </div>
+  </div>
+
   <div id="modal-objective" class="modal hidden">
     <h3>🤫 Tu objetivo secreto</h3>
     <p id="obj-modal-text" class="objective"></p>
@@ -167,7 +186,7 @@
 </section>
 
 <script src="/socket.io/socket.io.js"></script>
-<script src="teg-data.js?v=3"></script>
-<script src="client.js?v=3"></script>
+<script src="teg-data.js?v=4"></script>
+<script src="client.js?v=4"></script>
 </body>
 </html>
