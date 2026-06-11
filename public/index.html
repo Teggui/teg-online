@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0e1116">
+<title>TEG · Plan Táctico y Estratégico de la Guerra</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎲</text></svg>">
+</head>
+<body>
+
+<!-- ============================= INICIO ============================= -->
+<section id="screen-home" class="screen active">
+  <div class="home-box">
+    <h1 class="logo">T·E·G</h1>
+    <p class="tagline">Plan Táctico y Estratégico de la Guerra</p>
+    <input id="home-name" type="text" maxlength="18" placeholder="Tu nombre" autocomplete="off">
+    <button id="btn-create" class="btn primary big-btn">Crear partida</button>
+    <div class="join-row">
+      <input id="home-code" type="text" maxlength="6" placeholder="CÓDIGO" autocomplete="off">
+      <button id="btn-join" class="btn">Unirse</button>
+    </div>
+    <p id="home-error" class="error-msg"></p>
+    <button id="btn-resume" class="btn ghost hidden">↩ Volver a mi partida</button>
+  </div>
+</section>
+
+<!-- ============================= LOBBY ============================= -->
+<section id="screen-lobby" class="screen">
+  <div class="lobby-box">
+    <h2>Sala de espera</h2>
+    <div class="room-code-wrap">
+      <span>Código:</span>
+      <strong id="lobby-code" class="room-code">······</strong>
+      <button id="btn-copy" class="btn tiny">Copiar</button>
+    </div>
+    <p class="hint">Pasale el código (o el link) a tus amigos para que se unan.</p>
+    <ul id="lobby-players" class="lobby-players"></ul>
+    <div class="color-pick">
+      <p>Elegí tu color:</p>
+      <div id="color-swatches" class="swatches"></div>
+    </div>
+    <button id="btn-start" class="btn primary big-btn hidden">¡Empezar la guerra!</button>
+    <p id="lobby-wait" class="hint"></p>
+    <p id="lobby-error" class="error-msg"></p>
+  </div>
+</section>
+
+<!-- ============================= JUEGO ============================= -->
+<section id="screen-game" class="screen">
+  <header id="game-header">
+    <button id="btn-sidebar" class="icon-btn" title="Jugadores">☰</button>
+    <div id="turn-banner"><span id="turn-text">—</span></div>
+    <button id="btn-chat" class="icon-btn" title="Chat">💬<span id="chat-badge" class="badge hidden"></span></button>
+  </header>
+
+  <div id="map-wrap">
+    <svg id="map" xmlns="http://www.w3.org/2000/svg"></svg>
+    <div id="zoom-controls">
+      <button id="zoom-in" class="icon-btn">＋</button>
+      <button id="zoom-out" class="icon-btn">－</button>
+      <button id="zoom-fit" class="icon-btn">⤢</button>
+    </div>
+  </div>
+
+  <div id="toasts"></div>
+
+  <footer id="action-bar">
+    <div id="action-info">—</div>
+    <div id="action-buttons"></div>
+  </footer>
+
+  <!-- Sidebar -->
+  <aside id="sidebar" class="panel">
+    <div class="panel-head">
+      <h3>Partida <span id="side-code" class="room-code small"></span></h3>
+      <button class="icon-btn panel-close" data-close="sidebar">✕</button>
+    </div>
+    <div class="panel-body">
+      <ul id="side-players"></ul>
+      <div class="side-section">
+        <h4>Tu objetivo secreto <button id="btn-obj-toggle" class="btn tiny">👁 Mostrar</button></h4>
+        <p id="side-objective" class="objective hidden-obj">···</p>
+      </div>
+      <div class="side-section">
+        <h4>Tus tarjetas de país <span id="side-cards-count"></span></h4>
+        <div id="side-cards" class="cards"></div>
+        <button id="btn-canje" class="btn primary hidden">Canjear seleccionadas</button>
+        <p id="canje-hint" class="hint"></p>
+      </div>
+      <div class="side-section">
+        <button id="btn-skip" class="btn warn hidden">⏭ Saltear turno (desconectado)</button>
+        <button id="btn-leave" class="btn ghost">Salir de la partida</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Chat -->
+  <aside id="chatpanel" class="panel">
+    <div class="panel-head">
+      <h3>Chat</h3>
+      <button class="icon-btn panel-close" data-close="chatpanel">✕</button>
+    </div>
+    <div id="chat-msgs" class="panel-body chat-msgs"></div>
+    <form id="chat-form">
+      <input id="chat-input" type="text" maxlength="240" placeholder="Escribí algo..." autocomplete="off">
+      <button class="btn primary" type="submit">➤</button>
+    </form>
+  </aside>
+
+  <div id="overlay" class="hidden"></div>
+
+  <!-- Combate (dados) -->
+  <div id="dice-modal" class="floating hidden">
+    <div id="dice-title">Francia ⚔ España</div>
+    <div class="dice-row">
+      <div class="dice-side"><span id="dice-att-name"></span><div id="dice-att" class="dice"></div></div>
+      <div class="vs">VS</div>
+      <div class="dice-side"><span id="dice-def-name"></span><div id="dice-def" class="dice"></div></div>
+    </div>
+    <div id="dice-result"></div>
+  </div>
+
+  <!-- Modales -->
+  <div id="modal-extra" class="modal hidden">
+    <h3>País conquistado 🎉</h3>
+    <p id="extra-text"></p>
+    <div id="extra-buttons" class="modal-buttons"></div>
+  </div>
+
+  <div id="modal-move" class="modal hidden">
+    <h3>Reagrupar</h3>
+    <p id="move-text"></p>
+    <div class="stepper">
+      <button id="move-minus" class="btn">−</button>
+      <span id="move-n" class="move-n">1</span>
+      <button id="move-plus" class="btn">＋</button>
+      <button id="move-max" class="btn tiny">Máx</button>
+    </div>
+    <div class="modal-buttons">
+      <button id="move-cancel" class="btn ghost">Cancelar</button>
+      <button id="move-ok" class="btn primary">Mover</button>
+    </div>
+  </div>
+
+  <div id="modal-gameover" class="modal hidden">
+    <h3 id="go-title">🏆 Fin de la partida</h3>
+    <p id="go-sub"></p>
+    <div id="go-reveal"></div>
+    <div class="modal-buttons">
+      <button id="btn-again" class="btn primary hidden">Jugar de nuevo</button>
+      <button id="btn-exit" class="btn ghost">Salir</button>
+    </div>
+  </div>
+</section>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="teg-data.js"></script>
+<script src="client.js"></script>
+</body>
+</html>

@@ -1,0 +1,803 @@
+/* TEG online — cliente. Todo el estado real vive en el servidor;
+ * acá solo se dibuja y se piden acciones. */
+(function () {
+  'use strict';
+  const D = window.TEG_DATA;
+  const socket = io();
+  const $ = (id) => document.getElementById(id);
+  const SVGNS = 'http://www.w3.org/2000/svg';
+
+  // ------------------------------------------------------------ estado local
+  let S = null;            // último snapshot del servidor
+  let selected = null;     // país seleccionado (origen)
+  let moveCtx = null;      // { from, to, max } para el modal de reagrupe
+  let placeMult = 1;       // multiplicador de colocación (×1 / ×5)
+  let objVisible = false;
+  let selCards = new Set();
+  let unreadChat = 0;
+  let diceQueue = [];
+  let diceShowing = false;
+
+  const session = {
+    load() { try { return JSON.parse(localStorage.getItem('teg-session')) || null; } catch (e) { return null; } },
+    save(code, token, name) { localStorage.setItem('teg-session', JSON.stringify({ code, token, name })); },
+    clear() { localStorage.removeItem('teg-session'); }
+  };
+
+  function colorHex(key) { return (D.COLORS[key] || {}).hex || '#888'; }
+  function colorText(key) { return (D.COLORS[key] || {}).text || '#fff'; }
+  function colorName(key) { return (D.COLORS[key] || {}).name || key; }
+  function player(id) { return (S && S.players.find(p => p.id === id)) || null; }
+  function myTurn() { return S && S.you && S.currentPlayerId === S.you.id; }
+  function isHost() { return S && S.you && S.hostId === S.you.id; }
+
+  // ------------------------------------------------------------ pantallas
+  function showScreen(name) {
+    for (const sc of document.querySelectorAll('.screen')) sc.classList.remove('active');
+    $('screen-' + name).classList.add('active');
+  }
+
+  // ============================================================ INICIO
+  const savedSession = session.load();
+  if (savedSession) {
+    $('btn-resume').classList.remove('hidden');
+    $('btn-resume').textContent = `↩ Volver a la partida ${savedSession.code}`;
+    $('home-name').value = savedSession.name || '';
+  }
+  // ¿Código en la URL? (ej: /?sala=ABC123)
+  const urlCode = new URLSearchParams(location.search).get('sala');
+  if (urlCode) $('home-code').value = urlCode.toUpperCase();
+
+  $('btn-create').addEventListener('click', () => {
+    const name = $('home-name').value.trim();
+    socket.emit('createRoom', { name }, (res) => {
+      if (res.error) return ($('home-error').textContent = res.error);
+      session.save(res.code, res.token, name);
+    });
+  });
+
+  $('btn-join').addEventListener('click', joinFromHome);
+  $('home-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') joinFromHome(); });
+  function joinFromHome() {
+    const name = $('home-name').value.trim();
+    const code = $('home-code').value.trim().toUpperCase();
+    socket.emit('joinRoom', { code, name }, (res) => {
+      if (res.error) return ($('home-error').textContent = res.error);
+      session.save(res.code, res.token, name);
+    });
+  }
+
+  $('btn-resume').addEventListener('click', () => {
+    const ss = session.load();
+    if (!ss) return;
+    socket.emit('rejoin', { code: ss.code, token: ss.token }, (res) => {
+      if (res.error) { $('home-error').textContent = res.error; session.clear(); $('btn-resume').classList.add('hidden'); }
+    });
+  });
+
+  // Reconexión automática: al conectar (o reconectar), si hay sesión guardada
+  // se intenta retomar el lugar en silencio.
+  socket.on('connect', () => {
+    const ss = session.load();
+    if (ss) socket.emit('rejoin', { code: ss.code, token: ss.token }, () => {});
+  });
+
+  // ============================================================ LOBBY
+  function renderLobby() {
+    $('lobby-code').textContent = S.code;
+    const ul = $('lobby-players');
+    ul.innerHTML = '';
+    for (const p of S.players) {
+      const li = document.createElement('li');
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      dot.style.background = colorHex(p.color);
+      li.appendChild(dot);
+      const nm = document.createElement('span');
+      nm.textContent = p.name;
+      li.appendChild(nm);
+      const tag = document.createElement('span');
+      tag.className = 'tagbadge';
+      tag.textContent = (p.id === S.hostId ? '👑 anfitrión ' : '') + (p.id === S.you.id ? '(vos)' : '');
+      li.appendChild(tag);
+      ul.appendChild(li);
+    }
+    const sw = $('color-swatches');
+    sw.innerHTML = '';
+    for (const key of Object.keys(D.COLORS)) {
+      const b = document.createElement('button');
+      b.className = 'swatch';
+      b.style.background = colorHex(key);
+      b.title = colorName(key);
+      const taken = S.players.some(p => p.color === key && p.id !== S.you.id);
+      if (taken) b.classList.add('taken');
+      if (S.you.color === key) b.classList.add('mine');
+      b.addEventListener('click', () => socket.emit('pickColor', { color: key }, (res) => {
+        if (res.error) $('lobby-error').textContent = res.error;
+      }));
+      sw.appendChild(b);
+    }
+    const canStart = isHost() && S.players.length >= 2;
+    $('btn-start').classList.toggle('hidden', !isHost());
+    $('btn-start').disabled = !canStart;
+    $('lobby-wait').textContent = isHost()
+      ? (S.players.length < 2 ? 'Esperando al menos un jugador más…' : `${S.players.length} jugadores listos.`)
+      : 'Esperando que el anfitrión inicie la partida…';
+  }
+
+  $('btn-copy').addEventListener('click', async () => {
+    const url = `${location.origin}/?sala=${S.code}`;
+    try { await navigator.clipboard.writeText(`Jugamos al TEG 🎲 Entrá acá: ${url} (código ${S.code})`); $('btn-copy').textContent = '¡Copiado!'; }
+    catch (e) { $('btn-copy').textContent = S.code; }
+    setTimeout(() => ($('btn-copy').textContent = 'Copiar'), 1600);
+  });
+
+  $('btn-start').addEventListener('click', () => {
+    socket.emit('startGame', {}, (res) => { if (res.error) $('lobby-error').textContent = res.error; });
+  });
+
+  // ============================================================ MAPA SVG
+  const VB = { w: 1320, h: 700 };
+  let view = { x: 0, y: 0, w: VB.w, h: VB.h };
+  const map = $('map');
+  const countryEls = {};
+
+  function svgEl(tag, attrs) {
+    const el = document.createElementNS(SVGNS, tag);
+    for (const k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+
+  function buildMap() {
+    map.setAttribute('viewBox', `0 0 ${VB.w} ${VB.h}`);
+    map.innerHTML = '';
+
+    // Capas: continentes -> fronteras -> países
+    const gHulls = svgEl('g', {});
+    const gEdges = svgEl('g', {});
+    const gCountries = svgEl('g', {});
+    map.appendChild(gHulls); map.appendChild(gEdges); map.appendChild(gCountries);
+
+    // Manchas de continente (caja envolvente redondeada)
+    for (const [key, cont] of Object.entries(D.CONTINENTS)) {
+      const pts = Object.values(D.COUNTRIES).filter(c => c.cont === key);
+      const xs = pts.map(c => c.x), ys = pts.map(c => c.y);
+      const x0 = Math.min(...xs) - 52, x1 = Math.max(...xs) + 52;
+      const y0 = Math.min(...ys) - 52, y1 = Math.max(...ys) + 58;
+      gHulls.appendChild(svgEl('rect', {
+        x: x0, y: y0, width: x1 - x0, height: y1 - y0, rx: 46,
+        fill: cont.hue, class: 'cont-hull'
+      }));
+      const lbl = svgEl('text', { x: (x0 + x1) / 2, y: y0 + 20, 'text-anchor': 'middle', class: 'cont-label' });
+      lbl.textContent = cont.name + ' +' + cont.bonus;
+      gHulls.appendChild(lbl);
+    }
+
+    // Fronteras
+    const seaPairs = new Set(['chile|australia', 'brasil|sahara', 'nuevayork|groenlandia',
+      'groenlandia|islandia', 'espana|sahara', 'sumatra|india', 'borneo|malasia',
+      'australia|sumatra', 'australia|java', 'australia|borneo', 'china|japon', 'kamtchatka|japon',
+      'suecia|islandia', 'granbretana|islandia', 'espana|granbretana', 'egipto|polonia',
+      'egipto|madagascar', 'zaire|madagascar', 'egipto|turquia', 'egipto|israel']);
+    function isSea(a, b) { return seaPairs.has(a + '|' + b) || seaPairs.has(b + '|' + a); }
+
+    for (const [a, b] of D.EDGES) {
+      const A = D.COUNTRIES[a], B = D.COUNTRIES[b];
+      const cls = 'edge' + (isSea(a, b) ? ' sea' : '');
+      if (a === 'alaska' && b === 'kamtchatka' || a === 'kamtchatka' && b === 'alaska') {
+        // Puente que da la vuelta al mundo: dos tramos hacia los bordes
+        gEdges.appendChild(svgEl('path', { d: `M ${A.x} ${A.y} L 8 ${A.y}`, class: 'edge sea' }));
+        gEdges.appendChild(svgEl('path', { d: `M ${B.x} ${B.y} L ${VB.w - 8} ${B.y}`, class: 'edge sea' }));
+        continue;
+      }
+      if ((a === 'chile' && b === 'australia') || (a === 'australia' && b === 'chile')) {
+        const C1 = D.COUNTRIES.chile, C2 = D.COUNTRIES.australia;
+        gEdges.appendChild(svgEl('path', {
+          d: `M ${C1.x} ${C1.y} Q ${(C1.x + C2.x) / 2} ${VB.h - 6} ${C2.x} ${C2.y}`, class: 'edge sea'
+        }));
+        continue;
+      }
+      gEdges.appendChild(svgEl('path', { d: `M ${A.x} ${A.y} L ${B.x} ${B.y}`, class: cls }));
+    }
+
+    // Países
+    for (const c of Object.values(D.COUNTRIES)) {
+      const g = svgEl('g', { class: 'country', 'data-id': c.id });
+      g.appendChild(svgEl('circle', { class: 'ring', cx: c.x, cy: c.y, r: 30 }));
+      g.appendChild(svgEl('circle', { class: 'body', cx: c.x, cy: c.y, r: 23, fill: '#39414f' }));
+      const troops = svgEl('text', { class: 'troops', x: c.x, y: c.y, fill: '#fff' });
+      troops.textContent = '';
+      g.appendChild(troops);
+      const name = svgEl('text', { class: 'cname', x: c.x, y: c.y + 38 });
+      name.textContent = c.name;
+      g.appendChild(name);
+      g.addEventListener('click', (e) => { e.stopPropagation(); onCountryTap(c.id); });
+      gCountries.appendChild(g);
+      countryEls[c.id] = g;
+    }
+    applyView();
+  }
+
+  function applyView() {
+    map.setAttribute('viewBox', `${view.x} ${view.y} ${view.w} ${view.h}`);
+  }
+
+  function fitView() {
+    view = { x: 0, y: 0, w: VB.w, h: VB.h };
+    applyView();
+  }
+
+  function zoomAt(cx, cy, factor) {
+    const nw = Math.min(VB.w * 1.15, Math.max(VB.w / 6, view.w * factor));
+    const k = nw / view.w;
+    view.x = cx - (cx - view.x) * k;
+    view.y = cy - (cy - view.y) * k;
+    view.w = nw;
+    view.h = view.h * k;
+    clampView();
+    applyView();
+  }
+
+  function clampView() {
+    const mX = VB.w * 0.25, mY = VB.h * 0.25;
+    view.x = Math.max(-mX, Math.min(VB.w + mX - view.w, view.x));
+    view.y = Math.max(-mY, Math.min(VB.h + mY - view.h, view.y));
+  }
+
+  function clientToSvg(px, py) {
+    const r = map.getBoundingClientRect();
+    return {
+      x: view.x + ((px - r.left) / r.width) * view.w,
+      y: view.y + ((py - r.top) / r.height) * view.h
+    };
+  }
+
+  // Pan + pinch con pointer events
+  const pointers = new Map();
+  let panStart = null, pinchStart = null, movedFar = false;
+
+  map.addEventListener('pointerdown', (e) => {
+    map.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    movedFar = false;
+    if (pointers.size === 1) {
+      panStart = { px: e.clientX, py: e.clientY, vx: view.x, vy: view.y };
+    } else if (pointers.size === 2) {
+      const [p1, p2] = [...pointers.values()];
+      pinchStart = { d: Math.hypot(p1.x - p2.x, p1.y - p2.y), view: { ...view }, cx: (p1.x + p2.x) / 2, cy: (p1.y + p2.y) / 2 };
+      panStart = null;
+    }
+  });
+  map.addEventListener('pointermove', (e) => {
+    if (!pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.size === 2 && pinchStart) {
+      const [p1, p2] = [...pointers.values()];
+      const d = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+      if (Math.abs(d - pinchStart.d) > 4) movedFar = true;
+      const factor = pinchStart.d / Math.max(20, d);
+      const c = clientToSvg(pinchStart.cx, pinchStart.cy);
+      view = { ...pinchStart.view };
+      zoomAt(c.x, c.y, factor);
+    } else if (panStart) {
+      const r = map.getBoundingClientRect();
+      const dx = (e.clientX - panStart.px) * (view.w / r.width);
+      const dy = (e.clientY - panStart.py) * (view.h / r.height);
+      if (Math.hypot(e.clientX - panStart.px, e.clientY - panStart.py) > 8) movedFar = true;
+      view.x = panStart.vx - dx;
+      view.y = panStart.vy - dy;
+      clampView();
+      applyView();
+    }
+  });
+  function endPointer(e) {
+    pointers.delete(e.pointerId);
+    if (pointers.size < 2) pinchStart = null;
+    if (pointers.size === 1) {
+      const [p] = [...pointers.values()];
+      panStart = { px: p.x, py: p.y, vx: view.x, vy: view.y };
+    } else if (pointers.size === 0) panStart = null;
+  }
+  map.addEventListener('pointerup', endPointer);
+  map.addEventListener('pointercancel', endPointer);
+  // Si se arrastró el mapa, anular el click que se dispara después
+  map.addEventListener('click', (e) => { if (movedFar) { e.stopPropagation(); } }, true);
+  map.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const c = clientToSvg(e.clientX, e.clientY);
+    zoomAt(c.x, c.y, e.deltaY > 0 ? 1.15 : 0.87);
+  }, { passive: false });
+
+  $('zoom-in').addEventListener('click', () => zoomAt(view.x + view.w / 2, view.y + view.h / 2, 0.8));
+  $('zoom-out').addEventListener('click', () => zoomAt(view.x + view.w / 2, view.y + view.h / 2, 1.25));
+  $('zoom-fit').addEventListener('click', fitView);
+
+  // ------------------------------------------------------------ interacción
+  function onCountryTap(id) {
+    if (movedFar || !S || S.status !== 'playing' || !myTurn()) return;
+    const me = S.you.id;
+    const ct = S.countries[id];
+    const phase = S.phase;
+
+    if (phase === 'inicial5' || phase === 'inicial3' || phase === 'reinforce') {
+      if (ct.o !== me) return flash('Ese país no es tuyo.');
+      socket.emit('placeArmies', { country: id, n: placeMult }, (res) => {
+        if (res.error) flash(res.error);
+      });
+      return;
+    }
+
+    if (phase === 'attack') {
+      if (ct.o === me) {
+        selected = (selected === id) ? null : (ct.a > 1 ? id : selected);
+        if (ct.a <= 1 && selected !== id) flash('Necesitás al menos 2 ejércitos para atacar desde ahí.');
+        renderMap();
+        return;
+      }
+      if (selected && D.isAdjacent(selected, id)) {
+        socket.emit('attack', { from: selected, to: id }, (res) => { if (res.error) flash(res.error); });
+      }
+      return;
+    }
+
+    if (phase === 'regroup') {
+      if (ct.o === me) {
+        if (!selected) { selected = id; renderMap(); return; }
+        if (selected === id) { selected = null; renderMap(); return; }
+        if (D.isAdjacent(selected, id)) {
+          const from = S.countries[selected];
+          const max = from.a - 1; // el servidor valida los "bloqueados" igual
+          if (max < 1) { flash('No quedan ejércitos para mover ahí.'); return; }
+          openMoveModal(selected, id, max);
+        } else {
+          selected = id;
+          renderMap();
+        }
+      }
+    }
+  }
+
+  // ------------------------------------------------------------ render mapa
+  function renderMap() {
+    if (!S || !S.countries) return;
+    const me = S.you ? S.you.id : null;
+    const phase = S.phase;
+    const mine = myTurn();
+    for (const id of Object.keys(D.COUNTRIES)) {
+      const g = countryEls[id];
+      const ct = S.countries[id];
+      const owner = player(ct.o);
+      const body = g.querySelector('.body');
+      const troops = g.querySelector('.troops');
+      body.setAttribute('fill', owner ? colorHex(owner.color) : '#39414f');
+      troops.textContent = ct.a;
+      troops.setAttribute('fill', owner ? colorText(owner.color) : '#fff');
+      g.classList.remove('selectable', 'selected', 'target', 'friendly-target');
+
+      if (!mine || S.winner) continue;
+      if (phase === 'inicial5' || phase === 'inicial3') {
+        if (ct.o === me) g.classList.add('selectable');
+      } else if (phase === 'reinforce') {
+        if (ct.o === me && canPlaceAt(id)) g.classList.add('selectable');
+      } else if (phase === 'attack') {
+        if (selected === id) g.classList.add('selected');
+        else if (selected && ct.o !== me && D.isAdjacent(selected, id)) g.classList.add('target');
+        else if (!selected && ct.o === me && ct.a > 1) g.classList.add('selectable');
+      } else if (phase === 'regroup') {
+        if (selected === id) g.classList.add('selected');
+        else if (selected && ct.o === me && D.isAdjacent(selected, id)) g.classList.add('friendly-target');
+        else if (!selected && ct.o === me && ct.a > 1) g.classList.add('selectable');
+      }
+    }
+  }
+
+  function canPlaceAt(id) {
+    if (!S.reinforce) return false;
+    if (S.you.mustTrade) return false;
+    if (S.reinforce.free > 0) return true;
+    const cont = D.COUNTRIES[id].cont;
+    return (S.reinforce.conts[cont] || 0) > 0;
+  }
+
+  // ------------------------------------------------------------ barra de acción
+  function renderActionBar() {
+    const info = $('action-info');
+    const btns = $('action-buttons');
+    btns.innerHTML = '';
+    if (!S || S.status !== 'playing') { info.textContent = ''; return; }
+
+    const cur = player(S.currentPlayerId);
+    const mine = myTurn();
+
+    if (!mine) {
+      info.innerHTML = `Turno de <b>${esc(cur.name)}</b> · ${phaseName(S.phase)}`;
+      return;
+    }
+
+    const mkBtn = (label, cls, fn) => {
+      const b = document.createElement('button');
+      b.className = 'btn ' + cls;
+      b.textContent = label;
+      b.addEventListener('click', fn);
+      btns.appendChild(b);
+      return b;
+    };
+    const multBtn = () => mkBtn('×' + placeMult, '', () => {
+      placeMult = placeMult === 1 ? 5 : 1;
+      renderActionBar();
+    });
+
+    if (S.phase === 'inicial5' || S.phase === 'inicial3') {
+      info.innerHTML = `Tocá tus países para colocar <b>${S.placeLeft}</b> ejércitos`;
+      multBtn();
+    } else if (S.phase === 'reinforce') {
+      const conts = Object.entries(S.reinforce.conts).filter(([, v]) => v > 0)
+        .map(([k, v]) => `${D.CONTINENTS[k].name}: <b>${v}</b>`).join(' · ');
+      if (S.you.mustTrade) {
+        info.innerHTML = '⚠️ Tenés 5+ tarjetas: canjeá antes de colocar (abrí el panel ☰).';
+        mkBtn('Abrir tarjetas', 'primary', () => openPanel('sidebar'));
+      } else {
+        info.innerHTML = `Colocá ejércitos — libres: <b>${S.reinforce.free}</b>${conts ? ' · ' + conts : ''}`;
+        multBtn();
+        if (S.you.cards.length >= 3) mkBtn('🎴 Canjear', '', () => openPanel('sidebar'));
+      }
+    } else if (S.phase === 'attack') {
+      info.innerHTML = selected
+        ? `Atacando desde <b>${D.COUNTRIES[selected].name}</b>: tocá un país enemigo limítrofe`
+        : 'Tocá un país tuyo (con 2+ ejércitos) para atacar';
+      mkBtn('Reagrupar ➜', '', () => {
+        selected = null;
+        socket.emit('toRegroup', {}, (res) => { if (res.error) flash(res.error); });
+      });
+      mkBtn('Terminar turno', 'primary', endTurn);
+    } else if (S.phase === 'regroup') {
+      info.innerHTML = selected
+        ? `Moviendo desde <b>${D.COUNTRIES[selected].name}</b>: tocá un país tuyo limítrofe`
+        : 'Reagrupá: tocá origen y destino (opcional)';
+      mkBtn('Terminar turno', 'primary', endTurn);
+    }
+  }
+
+  function endTurn() {
+    selected = null;
+    socket.emit('endTurn', {}, (res) => { if (res.error) flash(res.error); });
+  }
+
+  function phaseName(ph) {
+    return {
+      inicial5: 'colocando 5 ejércitos', inicial3: 'colocando 3 ejércitos',
+      reinforce: 'incorporando ejércitos', attack: 'atacando', regroup: 'reagrupando'
+    }[ph] || '';
+  }
+
+  // ------------------------------------------------------------ header
+  function renderHeader() {
+    const cur = player(S.currentPlayerId);
+    const banner = $('turn-banner');
+    const txt = $('turn-text');
+    if (S.status === 'finished') {
+      banner.classList.remove('my-turn');
+      txt.textContent = '🏁 Partida terminada';
+      return;
+    }
+    if (!cur) { txt.textContent = '—'; return; }
+    if (myTurn()) {
+      banner.classList.add('my-turn');
+      txt.textContent = `▶ ¡Tu turno! (${phaseName(S.phase)}) · Ronda ${Math.max(1, S.round)}`;
+    } else {
+      banner.classList.remove('my-turn');
+      txt.textContent = `Turno de ${cur.name} · ${phaseName(S.phase)}`;
+    }
+  }
+
+  // ------------------------------------------------------------ sidebar
+  function renderSidebar() {
+    $('side-code').textContent = S.code;
+    const ul = $('side-players');
+    ul.innerHTML = '';
+    for (const p of S.players) {
+      const li = document.createElement('li');
+      if (p.id === S.currentPlayerId) li.classList.add('current');
+      if (p.eliminated) li.classList.add('dead');
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      dot.style.background = colorHex(p.color);
+      li.appendChild(dot);
+      const nm = document.createElement('span');
+      nm.textContent = p.name + (p.id === S.you.id ? ' (vos)' : '');
+      li.appendChild(nm);
+      if (!p.connected && !p.eliminated) {
+        const off = document.createElement('span');
+        off.className = 'offline';
+        off.textContent = '⚡ off';
+        li.appendChild(off);
+      }
+      const st = document.createElement('span');
+      st.className = 'stats';
+      st.textContent = `${p.countryCount}🏳 ${p.armyCount}⚔ ${p.cardCount}🎴`;
+      li.appendChild(st);
+      ul.appendChild(li);
+    }
+
+    // objetivo
+    const obj = $('side-objective');
+    if (S.you.objective) {
+      let extra = '';
+      if (S.you.objective.type === 'destroy' && S.you.objective.targetName && !S.you.objective.impossible) {
+        extra = `<span class="obj-extra">→ Tu blanco actual: ${esc(S.you.objective.targetName)}</span>`;
+      }
+      if (S.you.objective.impossible) {
+        extra = '<span class="obj-extra">⚠️ Tu blanco fue destruido por otro: ahora vale solo el objetivo común (30 países).</span>';
+      }
+      obj.innerHTML = esc(S.you.objective.text) +
+        '<span class="obj-extra">Objetivo común: ocupar 30 países.</span>' + extra;
+    } else {
+      obj.textContent = 'Ocupar 30 países.';
+    }
+    obj.classList.toggle('hidden-obj', !objVisible);
+
+    // tarjetas
+    $('side-cards-count').textContent = `(${S.you.cards.length})`;
+    const wrap = $('side-cards');
+    wrap.innerHTML = '';
+    selCards = new Set([...selCards].filter(i => i < S.you.cards.length));
+    S.you.cards.forEach((card, i) => {
+      const div = document.createElement('div');
+      div.className = 'card' + (selCards.has(i) ? ' sel' : '') + (card.used ? ' used' : '');
+      div.title = card.used ? 'Premio de 2 ejércitos ya usado' : '';
+      div.innerHTML = `<span class="sym">${D.SYMBOLS[card.sym].icon}</span>` +
+        `<span class="cn">${esc(D.COUNTRIES[card.c].name)}<br><small>${D.SYMBOLS[card.sym].name}</small></span>`;
+      div.addEventListener('click', () => {
+        if (selCards.has(i)) selCards.delete(i);
+        else if (selCards.size < 3) selCards.add(i);
+        renderSidebar();
+      });
+      wrap.appendChild(div);
+    });
+    const canjeOk = myTurn() && S.phase === 'reinforce' && selCards.size === 3;
+    $('btn-canje').classList.toggle('hidden', S.you.cards.length < 3);
+    $('btn-canje').disabled = !canjeOk;
+    $('canje-hint').textContent =
+      S.you.cards.length >= 3
+        ? (myTurn() && S.phase === 'reinforce'
+            ? 'Elegí 3 tarjetas: 3 símbolos iguales o 3 distintos (🃏 vale por cualquiera).'
+            : 'Podés canjear en tu fase de incorporación de ejércitos.')
+        : '';
+
+    // saltear turno (host) / salir
+    const cur = player(S.currentPlayerId);
+    $('btn-skip').classList.toggle('hidden',
+      !(isHost() && S.status === 'playing' && cur && !cur.connected && cur.id !== S.you.id));
+  }
+
+  $('btn-obj-toggle').addEventListener('click', () => {
+    objVisible = !objVisible;
+    $('btn-obj-toggle').textContent = objVisible ? '🙈 Ocultar' : '👁 Mostrar';
+    $('side-objective').classList.toggle('hidden-obj', !objVisible);
+  });
+
+  $('btn-canje').addEventListener('click', () => {
+    socket.emit('canje', { cards: [...selCards] }, (res) => {
+      if (res.error) flash(res.error);
+      else selCards.clear();
+    });
+  });
+
+  $('btn-skip').addEventListener('click', () => {
+    socket.emit('skipTurn', {}, (res) => { if (res.error) flash(res.error); });
+  });
+
+  $('btn-leave').addEventListener('click', () => {
+    if (!confirm('¿Salir de la partida? Podés volver después con el código y tu nombre.')) return;
+    session.clear();
+    location.reload();
+  });
+
+  // ------------------------------------------------------------ paneles
+  function openPanel(id) {
+    $(id).classList.add('open');
+    if (id === 'chatpanel') {
+      unreadChat = 0;
+      renderChatBadge();
+      const m = $('chat-msgs');
+      m.scrollTop = m.scrollHeight;
+    }
+  }
+  function closePanel(id) { $(id).classList.remove('open'); }
+  $('btn-sidebar').addEventListener('click', () => { closePanel('chatpanel'); openPanel('sidebar'); });
+  $('btn-chat').addEventListener('click', () => { closePanel('sidebar'); openPanel('chatpanel'); });
+  for (const b of document.querySelectorAll('.panel-close')) {
+    b.addEventListener('click', () => closePanel(b.dataset.close));
+  }
+  $('map-wrap').addEventListener('pointerdown', () => { closePanel('sidebar'); closePanel('chatpanel'); });
+
+  // ------------------------------------------------------------ chat
+  function addChatMsg(msg, scroll) {
+    const div = document.createElement('div');
+    div.className = 'msg';
+    div.innerHTML = `<b style="color:${colorHex(msg.color)}">${esc(msg.name)}:</b>${esc(msg.text)}`;
+    const box = $('chat-msgs');
+    box.appendChild(div);
+    while (box.children.length > 120) box.removeChild(box.firstChild);
+    if (scroll) box.scrollTop = box.scrollHeight;
+  }
+  $('chat-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const text = $('chat-input').value.trim();
+    if (!text) return;
+    socket.emit('chat', { text });
+    $('chat-input').value = '';
+  });
+  let lastChatTs = 0;
+  function syncChat(list, scroll, notify) {
+    for (const msg of list) {
+      if (!msg.ts || msg.ts <= lastChatTs) continue;
+      lastChatTs = msg.ts;
+      addChatMsg(msg, scroll);
+      if (notify && !$('chatpanel').classList.contains('open')) {
+        unreadChat++;
+        renderChatBadge();
+      }
+    }
+  }
+  socket.on('chat', (msg) => syncChat([msg], true, true));
+  function renderChatBadge() {
+    const b = $('chat-badge');
+    b.classList.toggle('hidden', unreadChat === 0);
+    b.textContent = unreadChat > 9 ? '9+' : unreadChat;
+  }
+
+  // ------------------------------------------------------------ toasts
+  socket.on('toast', ({ text, type }) => showToast(text, type));
+  function showToast(text, type) {
+    const t = document.createElement('div');
+    t.className = 'toast ' + (type || '');
+    t.textContent = text;
+    $('toasts').appendChild(t);
+    while ($('toasts').children.length > 4) $('toasts').removeChild($('toasts').firstChild);
+    setTimeout(() => t.classList.add('fade'), 3500);
+    setTimeout(() => t.remove(), 4100);
+  }
+  function flash(msg) { showToast(msg, ''); }
+
+  // ------------------------------------------------------------ dados
+  socket.on('combat', (c) => {
+    diceQueue.push(c);
+    if (!diceShowing) nextDice();
+  });
+  function nextDice() {
+    const c = diceQueue.shift();
+    if (!c) { diceShowing = false; $('dice-modal').classList.add('hidden'); return; }
+    diceShowing = true;
+    $('dice-title').textContent = `${c.fromName} ⚔ ${c.toName}`;
+    $('dice-att-name').textContent = c.attacker.name;
+    $('dice-def-name').textContent = c.defender.name;
+    renderDice($('dice-att'), c.attacker);
+    renderDice($('dice-def'), c.defender);
+    $('dice-result').textContent = c.conquered
+      ? `🎉 ¡${c.attacker.name} conquistó ${c.toName}!`
+      : `Bajas — ${c.attacker.name}: ${c.attacker.loss} · ${c.defender.name}: ${c.defender.loss}`;
+    $('dice-result').style.color = c.conquered ? '#7ee2a0' : '#aeb6c4';
+    $('dice-modal').classList.remove('hidden');
+    setTimeout(nextDice, 1900);
+  }
+  function renderDice(el, side) {
+    el.innerHTML = '';
+    side.dice.forEach((v) => {
+      const d = document.createElement('div');
+      d.className = 'die';
+      d.style.borderColor = colorHex(side.color);
+      d.textContent = v;
+      el.appendChild(d);
+    });
+  }
+
+  // ------------------------------------------------------------ modales
+  function showOverlay(show) { $('overlay').classList.toggle('hidden', !show); }
+
+  function renderExtraModal() {
+    const pe = S && S.pendingExtra;
+    const show = !!pe && myTurn() && S.phase === 'attack' && !S.winner;
+    $('modal-extra').classList.toggle('hidden', !show);
+    if (!show) { syncOverlay(); return; }
+    showOverlay(true);
+    $('extra-text').textContent =
+      `Ya pasó 1 ejército a ${D.COUNTRIES[pe.to].name}. ¿Querés pasar más desde ${D.COUNTRIES[pe.from].name}?`;
+    const wrap = $('extra-buttons');
+    wrap.innerHTML = '';
+    for (let n = 0; n <= pe.max; n++) {
+      const b = document.createElement('button');
+      b.className = 'btn ' + (n === pe.max ? 'primary' : '');
+      b.textContent = n === 0 ? 'No, así está bien' : `+${n} ejército${n > 1 ? 's' : ''}`;
+      b.addEventListener('click', () => {
+        socket.emit('occupyExtra', { n }, (res) => { if (res.error) flash(res.error); });
+      });
+      wrap.appendChild(b);
+    }
+  }
+
+  function openMoveModal(from, to, max) {
+    moveCtx = { from, to, max, n: 1 };
+    $('move-text').textContent = `${D.COUNTRIES[from].name} ➜ ${D.COUNTRIES[to].name} (máx. ${max})`;
+    $('move-n').textContent = '1';
+    $('modal-move').classList.remove('hidden');
+    showOverlay(true);
+  }
+  function closeMoveModal() {
+    moveCtx = null;
+    $('modal-move').classList.add('hidden');
+    syncOverlay();
+  }
+  $('move-minus').addEventListener('click', () => { if (moveCtx && moveCtx.n > 1) $('move-n').textContent = --moveCtx.n; });
+  $('move-plus').addEventListener('click', () => { if (moveCtx && moveCtx.n < moveCtx.max) $('move-n').textContent = ++moveCtx.n; });
+  $('move-max').addEventListener('click', () => { if (moveCtx) $('move-n').textContent = (moveCtx.n = moveCtx.max); });
+  $('move-cancel').addEventListener('click', closeMoveModal);
+  $('move-ok').addEventListener('click', () => {
+    if (!moveCtx) return;
+    socket.emit('move', { from: moveCtx.from, to: moveCtx.to, n: moveCtx.n }, (res) => {
+      if (res.error) flash(res.error);
+      else { selected = null; }
+      closeMoveModal();
+    });
+  });
+
+  function renderGameOver() {
+    const show = S && S.status === 'finished' && S.winner;
+    $('modal-gameover').classList.toggle('hidden', !show);
+    if (!show) { syncOverlay(); return; }
+    showOverlay(true);
+    const w = S.winner;
+    $('go-title').textContent = `🏆 ¡Ganó ${w.name}!`;
+    $('go-sub').textContent = w.how + '.';
+    const rev = $('go-reveal');
+    rev.innerHTML = '';
+    for (const r of w.reveal || []) {
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.innerHTML = `<span class="dot" style="background:${colorHex(r.color)}"></span>` +
+        `<span><b>${esc(r.name)}:</b> ${esc(r.text)}${r.impossible ? ' (anulado → 30 países)' : ''}</span>`;
+      rev.appendChild(row);
+    }
+    $('btn-again').classList.toggle('hidden', !isHost());
+  }
+  $('btn-again').addEventListener('click', () => {
+    socket.emit('playAgain', {}, (res) => { if (res.error) flash(res.error); });
+  });
+  $('btn-exit').addEventListener('click', () => { session.clear(); location.reload(); });
+
+  function syncOverlay() {
+    const any = ['modal-extra', 'modal-move', 'modal-gameover'].some(id => !$(id).classList.contains('hidden'));
+    showOverlay(any);
+  }
+
+  // ------------------------------------------------------------ snapshot
+  let mapBuilt = false;
+  socket.on('state', (st) => {
+    const prevPhase = S && S.phase;
+    const prevStatus = S && S.status;
+    S = st;
+    if (st.status === 'lobby') {
+      showScreen('lobby');
+      renderLobby();
+      return;
+    }
+    showScreen('game');
+    if (!mapBuilt) { buildMap(); mapBuilt = true; }
+    if (st.chat) syncChat(st.chat, false, prevStatus === 'playing');
+    if (prevPhase !== st.phase) selected = null;
+    if (!myTurn()) selected = null;
+    if (moveCtx && (!myTurn() || st.phase !== 'regroup')) closeMoveModal();
+    renderHeader();
+    renderMap();
+    renderActionBar();
+    renderSidebar();
+    renderExtraModal();
+    renderGameOver();
+  });
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, (ch) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[ch]));
+  }
+})();
