@@ -100,7 +100,7 @@
   // ------------------------------------------- índice de partidas activas
   function refreshGamesIndex() {
     if (!$('screen-home').classList.contains('active')) return;
-    socket.emit('listGames', {}, (res) => {
+    socket.emit('listGames', { name: $('home-name').value.trim() }, (res) => {
       if (!res || !res.games || !$('screen-home').classList.contains('active')) return;
       const wrap = $('games-index'), ul = $('games-list');
       if (!wrap) return;
@@ -139,6 +139,19 @@
           });
           li.appendChild(b);
         }
+        if (res.isAdmin) {
+          const del = document.createElement('button');
+          del.className = 'btn tiny warn';
+          del.textContent = 'Borrar';
+          del.addEventListener('click', () => {
+            if (!confirm(`¿Borrar la partida ${game.code}?`)) return;
+            socket.emit('deleteGame', { code: game.code, name: $('home-name').value.trim() }, (r) => {
+              if (r && r.error) showToast(r.error);
+              refreshGamesIndex();
+            });
+          });
+          li.appendChild(del);
+        }
         ul.appendChild(li);
       }
     });
@@ -156,14 +169,34 @@
       const dot = document.createElement('span');
       dot.className = 'dot';
       dot.style.background = colorHex(p.color);
+      if (!p.connected) dot.style.opacity = '.35';
       li.appendChild(dot);
       const nm = document.createElement('span');
       nm.textContent = p.name;
       li.appendChild(nm);
+      if (!p.connected) {
+        const off = document.createElement('span');
+        off.className = 'offline';
+        off.textContent = '⚡ off';
+        li.appendChild(off);
+      }
       const tag = document.createElement('span');
       tag.className = 'tagbadge';
       tag.textContent = (p.id === S.hostId ? '👑 anfitrión ' : '') + (p.id === S.you.id ? '(vos)' : '');
       li.appendChild(tag);
+      if (S.you.isAdmin && p.id !== S.you.id) {
+        const kick = document.createElement('button');
+        kick.className = 'btn tiny warn';
+        kick.textContent = '✕';
+        kick.title = 'Echar de la sala';
+        kick.addEventListener('click', () => {
+          if (!confirm(`¿Echar a ${p.name} de la sala?`)) return;
+          socket.emit('kickPlayer', { playerId: p.id }, (res) => {
+            if (res && res.error) $('lobby-error').textContent = res.error;
+          });
+        });
+        li.appendChild(kick);
+      }
       ul.appendChild(li);
     }
     const sw = $('color-swatches');
@@ -865,6 +898,16 @@
 
   // ------------------------------------------------------------ toasts
   socket.on('toast', ({ text, type }) => showToast(text, type));
+  socket.on('gameDeleted', ({ code }) => {
+    session.clear();
+    showToast(`La partida ${code} fue eliminada por el administrador.`, '');
+    setTimeout(() => location.reload(), 1200);
+  });
+  socket.on('kicked', ({ code }) => {
+    session.clear();
+    showToast(`Te sacaron de la partida ${code}.`, '');
+    setTimeout(() => location.reload(), 1200);
+  });
   function showToast(text, type) {
     const t = document.createElement('div');
     t.className = 'toast ' + (type || '');

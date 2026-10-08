@@ -80,8 +80,20 @@ function hist(g, line) {
 }
 
 const PORT = process.env.PORT || 3000;
-// Solo este nombre puede crear partidas (configurable por entorno)
+// Solo este nombre (o su forma "clave:nombre") puede crear/administrar partidas.
+// Ej: TEG_CREATOR=admin -> "admin" o "admin:alejandro" crean; en el juego se ve "alejandro".
 const CREATOR_NAME = process.env.TEG_CREATOR || 'MarcoLaTota';
+
+// ¿Es el creador/admin? (coincidencia exacta o "clave:algo")
+function isCreator(name) {
+  const n = name.toLowerCase();
+  return n === CREATOR_NAME.toLowerCase() || n.startsWith(CREATOR_NAME.toLowerCase() + ':');
+}
+// Nombre visible: si es "clave:nombre", devuelve solo "nombre".
+function displayName(name) {
+  const idx = name.indexOf(':');
+  return (idx >= 0 && isCreator(name)) ? name.slice(idx + 1) : name;
+}
 
 // ---------------------------------------------------------------- utilidades
 
@@ -142,7 +154,7 @@ function createGame(code) {
 
 function newPlayer(name) {
   return {
-    id: token(), name, color: null,
+    id: token(), name: displayName(name), rawName: name, color: null,
     socketId: null, connected: true,
     cards: [], trades: 0,
     objective: null, effTargetId: null, objImpossible: false,
@@ -561,6 +573,7 @@ function stateFor(g, viewer) {
     st.you = {
       id: viewer.id, name: viewer.name, color: viewer.color,
       cards: viewer.cards, trades: viewer.trades, mustTrade,
+      isAdmin: isCreator(viewer.rawName),
       objective: viewer.objective ? {
         type: viewer.objective.type,
         text: viewer.objective.text,
@@ -595,6 +608,7 @@ io.on('connection', (socket) => {
     game = g; me = p;
     p.socketId = socket.id;
     p.connected = true;
+    g.emptiedAt = null; // cancelar la gracia de lobby vacío
     socket.join(g.code);
   }
 
@@ -609,8 +623,8 @@ io.on('connection', (socket) => {
   socket.on('createRoom', ({ name } = {}, cb) => {
     name = String(name || '').trim().slice(0, 18);
     if (!name) return fail(cb, 'Poné tu nombre.');
-    if (name.toLowerCase() !== CREATOR_NAME.toLowerCase()) {
-      return fail(cb, `Solo ${CREATOR_NAME} puede crear partidas. Pedile el código y unite con "Unirse".`);
+    if (!isCreator(name)) {
+      return fail(cb, `Solo ${CREATOR_NAME} (o "${CREATOR_NAME}:tuNombre") puede crear partidas. Pedile el código y unite con "Unirse".`);
     }
     const g = createGame(newRoomCode());
     const p = newPlayer(name);
@@ -631,7 +645,7 @@ io.on('connection', (socket) => {
     if (!name) return fail(cb, 'Poné tu nombre.');
 
     // Reincorporación por nombre (mismo nombre, jugador desconectado)
-    const existing = g.players.find(p => p.name.toLowerCase() === name.toLowerCase());
+    const existing = g.players.find(p => p.rawName.toLowerCase() === name.toLowerCase());
     if (existing) {
       if (existing.connected) return fail(cb, 'Ya hay un jugador conectado con ese nombre.');
       attach(g, existing);
@@ -672,6 +686,27 @@ io.on('connection', (socket) => {
     if (!DATA.COLORS[color]) return fail(cb, 'Color inválido.');
     if (game.players.some(p => p.color === color && p.id !== me.id)) return fail(cb, 'Ese color ya está tomado.');
     me.color = color;
+    ok(cb);
+    broadcast(game);
+  });
+
+  socket.on('kickPlayer', ({ playerId } = {}, cb) => {
+    if (!game || !me) return fail(cb, 'No estás en una partida.');
+    if (game.status !== 'lobby') return fail(cb, 'La partida ya empezó.');
+    if (!isCreator(me.rawName)) return fail(cb, 'Solo el administrador puede echar jugadores.');
+    const target = game.players.find(p => p.id === playerId);
+    if (!target) return fail(cb, 'Jugador no encontrado.');
+    if (target.id === me.id) return fail(cb, 'No podés echarte a vos mismo.');
+    const sid = target.socketId;
+    target.socketId = null;
+    target.connected = false;
+    if (sid) {
+      const s = io.sockets.sockets.get(sid);
+      if (s) s.emit('kicked', { code: game.code, by: me.name });
+      if (s) s.disconnect(true);
+    }
+    game.players = game.players.filter(p => p.id !== target.id);
+    toast(game, `${me.name} echó a ${target.name} de la sala.`);
     ok(cb);
     broadcast(game);
   });
@@ -855,7 +890,7 @@ io.on('connection', (socket) => {
     broadcast(game);
   });
 
-  socket.on('listGames', (_payload, cb) => {
+  socket.on('listGames', ({ name } = {}, cb) => {
     const list = [...games.values()]
       .sort((a, b) => b.lastActivity - a.lastActivity)
       .slice(0, 20)
@@ -869,7 +904,24 @@ io.on('connection', (socket) => {
           name: p.name, color: p.color, connected: p.connected, eliminated: p.eliminated
         }))
       }));
-    ok(cb, { games: list });
+    ok(cb, { games: list, isAdmin: isCreator(String(name || '').trim()) });
+  });
+
+  socket.on('deleteGame', ({ code, name } = {}, cb) => {
+    if (!isCreator(String(name || '').trim())) {
+      return fail(cb, 'Solo el administrador puede borrar partidas.');
+    }
+    const g = games.get(String(code || '').toUpperCase());
+    if (!g) return fail(cb, 'No existe esa partida.');
+    io.to(g.code).emit('gameDeleted', { code: g.code });
+    for (const p of g.players) {
+      const sid = p.socketId;
+      p.socketId = null;
+      p.connected = false;
+      if (sid) { const s = io.sockets.sockets.get(sid); if (s) s.disconnect(true); }
+    }
+    games.delete(g.code);
+    ok(cb);
   });
 
   socket.on('pushSubscribe', ({ sub } = {}, cb) => {
@@ -903,14 +955,13 @@ io.on('connection', (socket) => {
     me.connected = false;
     me.socketId = null;
     if (game.status === 'lobby') {
-      // En el lobby el jugador se va de verdad y libera el color
-      game.players = game.players.filter(p => p.id !== me.id);
-      if (game.players.length === 0) {
-        games.delete(game.code);
-        return;
+      // Se conserva el asiento y el color: el jugador puede reentrar con su
+      // mismo nombre (o el host con "clave:nombre") y retomar su lugar.
+      if (game.players.some(p => p.connected)) {
+        toast(game, `${me.name} se desconectó de la sala.`);
+      } else {
+        game.emptiedAt = Date.now(); // nadie conectado: gracia de 3 minutos
       }
-      if (game.hostId === me.id) game.hostId = game.players[0].id;
-      toast(game, `${me.name} salió de la sala.`);
     } else {
       toast(game, `${me.name} se desconectó. Puede volver a entrar con el código ${game.code} y su nombre.`);
     }
@@ -918,14 +969,22 @@ io.on('connection', (socket) => {
   });
 });
 
-// Limpieza de partidas abandonadas (sin actividad por 3 horas)
+// Limpieza de partidas abandonadas
 setInterval(() => {
   const now = Date.now();
   for (const [code, g] of games) {
-    const anyConnected = g.players.some(p => p.connected);
-    if (!anyConnected && now - g.lastActivity > 3 * 60 * 60 * 1000) games.delete(code);
+    // Lobby vacío (sin conectados): gracia de 3 minutos
+    if (g.status === 'lobby' && !g.players.some(p => p.connected)) {
+      if (!g.emptiedAt) g.emptiedAt = now;
+      else if (now - g.emptiedAt > 3 * 60 * 1000) games.delete(code);
+      continue;
+    }
+    // Cualquier partida sin jugadores conectados: 12 horas de inactividad
+    if (!g.players.some(p => p.connected) && now - g.lastActivity > 12 * 60 * 60 * 1000) {
+      games.delete(code);
+    }
   }
-}, 10 * 60 * 1000);
+}, 30 * 1000);
 
 server.listen(PORT, () => {
   console.log(`TEG online escuchando en puerto ${PORT}`);
