@@ -893,7 +893,7 @@
       : `Bajas — ${c.attacker.name}: ${c.attacker.loss} · ${c.defender.name}: ${c.defender.loss}`;
     $('dice-result').style.color = c.conquered ? '#7ee2a0' : '#aeb6c4';
     $('dice-modal').classList.remove('hidden');
-    setTimeout(nextDice, 1900);
+    setTimeout(nextDice, 3000);
   }
   function renderDice(el, side) {
     el.innerHTML = '';
