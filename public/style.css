@@ -110,7 +110,7 @@ input:focus { border-color: #4895ef; }
 
 /* ---------------- mapa SVG ---------------- */
 .country { cursor: pointer; }
-.country circle.body { stroke: #1c1208; stroke-width: 2; }
+.country circle.body { stroke: #1c1208; stroke-width: 2; fill-opacity: 0.85; }
 @media (hover: hover) {
   .country:hover circle.body { stroke: #fff; stroke-width: 2.5; }
 }
