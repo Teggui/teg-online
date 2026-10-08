@@ -235,7 +235,6 @@
       const title = svgEl('title', {});
       title.textContent = c.name;
       g.appendChild(title);
-      g.addEventListener('click', (e) => { e.stopPropagation(); onCountryTap(c.id); });
       gCountries.appendChild(g);
       countryEls[c.id] = g;
     }
@@ -324,8 +323,15 @@
   }
   map.addEventListener('pointerup', endPointer);
   map.addEventListener('pointercancel', endPointer);
-  // Si se arrastró el mapa, anular el click que se dispara después
-  map.addEventListener('click', (e) => { if (movedFar) { e.stopPropagation(); } }, true);
+  // Tap para seleccionar/colocar: se detecta con elementFromPoint en pointerup.
+  // (El setPointerCapture del arrastre desvía el 'click' hacia el mapa, así
+  // que no se puede confiar en el listener de 'click' de cada país.)
+  map.addEventListener('pointerup', (e) => {
+    if (movedFar || pointers.size !== 0) return;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const g = el && el.closest && el.closest('.country');
+    if (g && g.dataset.id) onCountryTap(g.dataset.id);
+  });
   map.addEventListener('wheel', (e) => {
     e.preventDefault();
     const c = clientToSvg(e.clientX, e.clientY);

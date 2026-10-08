@@ -149,10 +149,12 @@ async function main() {
 
   // El jugador en turno puede colocar ejércitos tocando el mapa
   const turnPage = (await A.evaluate(() => document.getElementById('turn-banner').classList.contains('my-turn'))) ? A : B;
-  await turnPage.evaluate(() => {
-    const own = document.querySelector('.country.selectable');
-    own.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  const ownCenter = await turnPage.evaluate(() => {
+    const el = document.querySelector('.country.selectable circle.body');
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
   });
+  await turnPage.mouse.click(ownCenter.x, ownCenter.y);
   await new Promise((r) => setTimeout(r, 400));
   const placed = await turnPage.evaluate(() =>
     document.getElementById('action-info').textContent.includes('4'));
